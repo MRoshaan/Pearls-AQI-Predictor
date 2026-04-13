@@ -1,15 +1,9 @@
-"""Data ingestion script for Karachi AQI and weather data.
-
-This module fetches current and historical air-pollution data from OpenWeather,
-joins it with weather observations/forecast data, and stores raw combined data
-to a local CSV file.
-"""
+"""Data ingestion script for Karachi AQI data using AQICN API."""
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,37 +14,26 @@ from requests import Response
 from requests.exceptions import HTTPError, RequestException, Timeout
 
 
-@dataclass(frozen=True)
-class CityConfig:
-    """Configuration for a city location."""
-
-    name: str
-    lat: float
-    lon: float
-
-
-KARACHI = CityConfig(name="Karachi", lat=24.8607, lon=67.0011)
-
-OPENWEATHER_BASE_URL = "https://api.openweathermap.org/data/2.5"
+AQICN_BASE_URL = "https://api.waqi.info/feed/karachi/"
 REQUEST_TIMEOUT_SECONDS = 20
-HISTORY_DAYS = 5
+OUTPUT_PATH = Path("data/raw/karachi_aqi_raw.csv")
 
 
 def load_api_key() -> str:
-    """Load OpenWeather API key from environment."""
+    """Load AQICN API token from .env/environment."""
     load_dotenv()
-    api_key = os.getenv("OPENWEATHER_API_KEY")
+    api_key = os.getenv("API_KEY") or os.getenv("AQICN_API_KEY")
 
     if not api_key:
         raise ValueError(
-            "Missing OPENWEATHER_API_KEY. Add it to your .env file before running."
+            "Missing AQICN API token. Set API_KEY (or AQICN_API_KEY) in .env."
         )
 
     return api_key
 
 
 def get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
-    """Execute a GET request and return parsed JSON with robust handling."""
+    """Execute an HTTP GET request and return parsed JSON response."""
     try:
         response: Response = requests.get(
             url=url,
@@ -62,174 +45,82 @@ def get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
 
     except Timeout as exc:
         raise TimeoutError(
-            f"Request timed out after {REQUEST_TIMEOUT_SECONDS}s for: {url}"
+            f"Request timed out after {REQUEST_TIMEOUT_SECONDS}s for URL: {url}"
         ) from exc
 
     except HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else "Unknown"
-        body = exc.response.text[:500] if exc.response is not None else "No body"
+        status_code = exc.response.status_code if exc.response is not None else "Unknown"
+        response_body = exc.response.text[:500] if exc.response is not None else "No body"
         raise RuntimeError(
-            f"HTTP error {status} for {url}. Response body: {body}"
+            f"HTTP error {status_code} for URL {url}. Response: {response_body}"
         ) from exc
 
     except RequestException as exc:
-        raise ConnectionError(f"Request failed for {url}: {exc}") from exc
+        raise ConnectionError(f"Request failed for URL {url}: {exc}") from exc
 
 
-def fetch_current_air_pollution(city: CityConfig, api_key: str) -> dict[str, Any]:
-    """Fetch current AQI/pollutant data."""
-    url = f"{OPENWEATHER_BASE_URL}/air_pollution"
-    params = {"lat": city.lat, "lon": city.lon, "appid": api_key}
-    return get_json(url, params)
+def fetch_karachi_aqi(api_key: str) -> dict[str, Any]:
+    """Fetch current AQI payload for Karachi from AQICN API."""
+    payload = get_json(AQICN_BASE_URL, {"token": api_key})
 
-
-def fetch_historical_air_pollution(
-    city: CityConfig,
-    api_key: str,
-    start_unix: int,
-    end_unix: int,
-) -> dict[str, Any]:
-    """Fetch historical AQI/pollutant data for a time range."""
-    url = f"{OPENWEATHER_BASE_URL}/air_pollution/history"
-    params = {
-        "lat": city.lat,
-        "lon": city.lon,
-        "start": start_unix,
-        "end": end_unix,
-        "appid": api_key,
-    }
-    return get_json(url, params)
-
-
-def fetch_current_weather(city: CityConfig, api_key: str) -> dict[str, Any]:
-    """Fetch current weather data for the city."""
-    url = f"{OPENWEATHER_BASE_URL}/weather"
-    params = {"lat": city.lat, "lon": city.lon, "appid": api_key, "units": "metric"}
-    return get_json(url, params)
-
-
-def fetch_weather_forecast(city: CityConfig, api_key: str) -> dict[str, Any]:
-    """Fetch 5-day/3-hour weather forecast data for the city."""
-    url = f"{OPENWEATHER_BASE_URL}/forecast"
-    params = {"lat": city.lat, "lon": city.lon, "appid": api_key, "units": "metric"}
-    return get_json(url, params)
-
-
-def normalize_air_pollution_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Normalize OpenWeather air-pollution payload into tabular rows."""
-    rows: list[dict[str, Any]] = []
-
-    for item in payload.get("list", []):
-        components = item.get("components", {})
-        row = {
-            "timestamp": pd.to_datetime(item.get("dt"), unit="s", utc=True),
-            "aqi": item.get("main", {}).get("aqi"),
-            "co": components.get("co"),
-            "no": components.get("no"),
-            "no2": components.get("no2"),
-            "o3": components.get("o3"),
-            "so2": components.get("so2"),
-            "pm2_5": components.get("pm2_5"),
-            "pm10": components.get("pm10"),
-            "nh3": components.get("nh3"),
-        }
-        rows.append(row)
-
-    return rows
-
-
-def normalize_weather_rows(
-    current_weather: dict[str, Any],
-    forecast_weather: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Normalize current and forecast weather payloads into tabular rows."""
-    rows: list[dict[str, Any]] = []
-
-    current_row = {
-        "timestamp": pd.to_datetime(current_weather.get("dt"), unit="s", utc=True),
-        "temp_c": current_weather.get("main", {}).get("temp"),
-        "feels_like_c": current_weather.get("main", {}).get("feels_like"),
-        "humidity_pct": current_weather.get("main", {}).get("humidity"),
-        "pressure_hpa": current_weather.get("main", {}).get("pressure"),
-        "wind_speed_mps": current_weather.get("wind", {}).get("speed"),
-        "clouds_pct": current_weather.get("clouds", {}).get("all"),
-    }
-    rows.append(current_row)
-
-    for item in forecast_weather.get("list", []):
-        rows.append(
-            {
-                "timestamp": pd.to_datetime(item.get("dt"), unit="s", utc=True),
-                "temp_c": item.get("main", {}).get("temp"),
-                "feels_like_c": item.get("main", {}).get("feels_like"),
-                "humidity_pct": item.get("main", {}).get("humidity"),
-                "pressure_hpa": item.get("main", {}).get("pressure"),
-                "wind_speed_mps": item.get("wind", {}).get("speed"),
-                "clouds_pct": item.get("clouds", {}).get("all"),
-            }
+    if payload.get("status") != "ok":
+        raise ValueError(
+            "AQICN API returned non-ok status: "
+            f"{payload.get('status')} | data: {payload.get('data')}"
         )
 
-    return rows
+    return payload
 
 
-def build_dataset(city: CityConfig, api_key: str) -> pd.DataFrame:
-    """Fetch, normalize, and merge AQI and weather datasets."""
-    end_time = datetime.now(timezone.utc)
-    start_time = end_time - timedelta(days=HISTORY_DAYS)
+def parse_karachi_aqi(payload: dict[str, Any]) -> pd.DataFrame:
+    """Parse AQICN JSON into a tabular dataframe with relevant fields."""
+    data = payload.get("data", {})
+    iaqi = data.get("iaqi", {})
+    city = data.get("city", {})
+    time_info = data.get("time", {})
 
-    historical_air = fetch_historical_air_pollution(
-        city=city,
-        api_key=api_key,
-        start_unix=int(start_time.timestamp()),
-        end_unix=int(end_time.timestamp()),
-    )
-    current_air = fetch_current_air_pollution(city=city, api_key=api_key)
-    current_weather = fetch_current_weather(city=city, api_key=api_key)
-    forecast_weather = fetch_weather_forecast(city=city, api_key=api_key)
+    row = {
+        "ingested_at_utc": datetime.now(timezone.utc).isoformat(),
+        "city": city.get("name", "Karachi"),
+        "aqi": data.get("aqi"),
+        "dominant_pollutant": data.get("dominentpol"),
+        "pm25": iaqi.get("pm25", {}).get("v"),
+        "pm10": iaqi.get("pm10", {}).get("v"),
+        "o3": iaqi.get("o3", {}).get("v"),
+        "no2": iaqi.get("no2", {}).get("v"),
+        "so2": iaqi.get("so2", {}).get("v"),
+        "co": iaqi.get("co", {}).get("v"),
+        "temperature_c": iaqi.get("t", {}).get("v"),
+        "humidity_pct": iaqi.get("h", {}).get("v"),
+        "pressure_hpa": iaqi.get("p", {}).get("v"),
+        "wind_speed": iaqi.get("w", {}).get("v"),
+        "aqicn_time_iso": time_info.get("iso"),
+        "aqicn_time_s": time_info.get("s"),
+        "aqicn_timezone": time_info.get("tz"),
+    }
 
-    air_rows = normalize_air_pollution_rows(historical_air)
-    air_rows.extend(normalize_air_pollution_rows(current_air))
-    weather_rows = normalize_weather_rows(current_weather, forecast_weather)
-
-    if not air_rows:
-        raise ValueError("No AQI records returned by API; cannot build dataset.")
-
-    air_df = pd.DataFrame(air_rows).drop_duplicates(subset=["timestamp"])
-    weather_df = pd.DataFrame(weather_rows).drop_duplicates(subset=["timestamp"])
-
-    air_df = air_df.sort_values("timestamp").reset_index(drop=True)
-    weather_df = weather_df.sort_values("timestamp").reset_index(drop=True)
-
-    merged_df = pd.merge_asof(
-        left=air_df,
-        right=weather_df,
-        on="timestamp",
-        direction="nearest",
-        tolerance=pd.Timedelta("3h"),
-    )
-
-    merged_df["city"] = city.name
-    return merged_df
+    df = pd.DataFrame([row])
+    df["aqicn_time_iso"] = pd.to_datetime(df["aqicn_time_iso"], errors="coerce")
+    return df
 
 
 def save_raw_data(df: pd.DataFrame, output_path: Path) -> None:
-    """Persist dataframe to CSV."""
+    """Save dataframe to CSV, creating parent directories if needed."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False)
 
 
 def main() -> None:
-    """Run data ingestion for Karachi and save local raw CSV."""
-    output_file = Path("data/raw/karachi_aqi_raw.csv")
-
+    """Run Karachi AQI ingestion and save to local raw CSV."""
     try:
         api_key = load_api_key()
-        dataset = build_dataset(city=KARACHI, api_key=api_key)
-        save_raw_data(dataset, output_file)
+        payload = fetch_karachi_aqi(api_key)
+        karachi_df = parse_karachi_aqi(payload)
+        save_raw_data(karachi_df, OUTPUT_PATH)
 
         print(
-            "Successfully saved Karachi AQI raw data "
-            f"({len(dataset)} rows) to {output_file}"
+            "Karachi AQI data saved successfully "
+            f"({len(karachi_df)} row) to {OUTPUT_PATH}"
         )
 
     except Exception as exc:  # pylint: disable=broad-except
