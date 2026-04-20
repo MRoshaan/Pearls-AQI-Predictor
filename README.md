@@ -1,7 +1,7 @@
 # Pearls AQI Predictor
 
 End-to-end Air Quality Index (AQI) prediction service focused on Karachi, Pakistan.
-Current phase: **Week 2 - Feature Engineering and Feature Store Integration**.
+Current phase: **Week 3 - Model Training and Model Registry**.
 
 ## Project Status
 
@@ -12,6 +12,7 @@ Current phase: **Week 2 - Feature Engineering and Feature Store Integration**.
 - EDA workflow for historical data with saved figures (`src/data/eda_karachi.py`)
 - Feature engineering pipeline with targets for +24h/+48h/+72h (`src/features/build_features.py`)
 - Hopsworks feature store uploader (`src/features/push_to_hopsworks.py`)
+- Model training and evaluation pipeline (`src/models/train_model.py`)
 - Dependency management with `requirements.txt`
 - Secret handling via `.env` and `.gitignore`
 
@@ -38,6 +39,8 @@ Current phase: **Week 2 - Feature Engineering and Feature Store Integration**.
 │   └── features/
 │       ├── build_features.py
 │       └── push_to_hopsworks.py
+│   └── models/
+│       └── train_model.py
 ├── requirements.txt
 └── README.md
 ```
@@ -56,6 +59,7 @@ pip install -r requirements.txt
 API_KEY=your_aqicn_token
 HOPSWORKS_API_KEY=your_hopsworks_api_key
 HOPSWORKS_PROJECT=your_hopsworks_project_name
+HOPSWORKS_MODEL_NAME=karachi_aqi_forecaster
 ```
 
 ## Run Pipelines
@@ -90,9 +94,23 @@ python src/features/build_features.py
 python src/features/push_to_hopsworks.py
 ```
 
+### 6) Train Models and Upload Winner to Model Registry (Week 3)
+
+```bash
+python src/models/train_model.py
+```
+
+This script:
+- pulls historical features/targets from Hopsworks
+- trains baseline models (Ridge, Random Forest)
+- optionally trains a TensorFlow MLP (`ENABLE_TENSORFLOW=true`)
+- evaluates using RMSE, MAE, R2
+- saves local artifacts under `artifacts/models/`
+- uploads the best model to Hopsworks Model Registry
+
 ## Next Suggested Milestones
 
-- Train/validation split and baseline model training pipeline
-- Model registry integration and experiment tracking
 - Hourly/daily CI pipeline automation
 - Prediction API + dashboard + AQI alerting
+- Explainability with SHAP/LIME
+- Full serverless deployment hardening
