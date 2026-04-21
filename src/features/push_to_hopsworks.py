@@ -32,6 +32,8 @@ def push_features_to_store(df: pd.DataFrame) -> None:
 
     api_key = os.getenv("HOPSWORKS_API_KEY")
     project_name = os.getenv("HOPSWORKS_PROJECT", "pearls_aqi_predictor")
+    hopsworks_host = os.getenv("HOPSWORKS_HOST", "run.hopsworks.ai")
+    hopsworks_port = int(os.getenv("HOPSWORKS_PORT", "443"))
     feature_group_name = os.getenv("HOPSWORKS_FEATURE_GROUP", "karachi_aqi_features")
     feature_group_version = int(os.getenv("HOPSWORKS_FEATURE_GROUP_VERSION", "1"))
 
@@ -45,7 +47,12 @@ def push_features_to_store(df: pd.DataFrame) -> None:
             "hopsworks package is not installed. Add it to requirements and install."
         ) from exc
 
-    project = hopsworks.login(project=project_name, api_key_value=api_key)
+    project = hopsworks.login(
+        project=project_name,
+        host=hopsworks_host,
+        port=hopsworks_port,
+        api_key_value=api_key,
+    )
     feature_store = project.get_feature_store()
 
     if "id" not in df.columns:

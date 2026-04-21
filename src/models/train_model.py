@@ -41,6 +41,8 @@ def load_environment() -> dict[str, Any]:
     config = {
         "hopsworks_api_key": os.getenv("HOPSWORKS_API_KEY"),
         "hopsworks_project": os.getenv("HOPSWORKS_PROJECT", "pearls_aqi_predictor"),
+        "hopsworks_host": os.getenv("HOPSWORKS_HOST", "run.hopsworks.ai"),
+        "hopsworks_port": int(os.getenv("HOPSWORKS_PORT", "443")),
         "feature_group": os.getenv("HOPSWORKS_FEATURE_GROUP", "karachi_aqi_features"),
         "feature_group_version": int(os.getenv("HOPSWORKS_FEATURE_GROUP_VERSION", "1")),
         "model_name": os.getenv("HOPSWORKS_MODEL_NAME", "karachi_aqi_forecaster"),
@@ -56,7 +58,12 @@ def load_environment() -> dict[str, Any]:
     return config
 
 
-def connect_hopsworks(project_name: str, api_key: str) -> Any:
+def connect_hopsworks(
+    project_name: str,
+    api_key: str,
+    host: str,
+    port: int,
+) -> Any:
     """Connect to Hopsworks project."""
     try:
         import hopsworks
@@ -65,7 +72,12 @@ def connect_hopsworks(project_name: str, api_key: str) -> Any:
             "hopsworks package is not installed. Install dependencies first."
         ) from exc
 
-    return hopsworks.login(project=project_name, api_key_value=api_key)
+    return hopsworks.login(
+        project=project_name,
+        host=host,
+        port=port,
+        api_key_value=api_key,
+    )
 
 
 def fetch_feature_group_dataframe(
@@ -323,6 +335,8 @@ def main() -> None:
     project = connect_hopsworks(
         project_name=config["hopsworks_project"],
         api_key=config["hopsworks_api_key"],
+        host=config["hopsworks_host"],
+        port=config["hopsworks_port"],
     )
 
     features_df = fetch_feature_group_dataframe(
