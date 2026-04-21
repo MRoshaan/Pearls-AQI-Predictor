@@ -59,7 +59,7 @@ pip install -r requirements.txt
 API_KEY=your_aqicn_token
 HOPSWORKS_API_KEY=your_hopsworks_api_key
 HOPSWORKS_PROJECT=your_hopsworks_project_name
-HOPSWORKS_HOST=run.hopsworks.ai
+HOPSWORKS_HOST=eu-west.cloud.hopsworks.ai
 HOPSWORKS_PORT=443
 HOPSWORKS_MODEL_NAME=karachi_aqi_forecaster
 ```

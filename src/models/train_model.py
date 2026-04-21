@@ -34,6 +34,16 @@ TARGET_COLUMNS = [
 ]
 
 
+def ensure_windows_hopsworks_tmp(host: str) -> None:
+    """Create temp directories expected by Hopsworks client on Windows."""
+    if os.name != "nt":
+        return
+
+    tmp_root = Path("/tmp")
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    (tmp_root / host).mkdir(parents=True, exist_ok=True)
+
+
 def load_environment() -> dict[str, Any]:
     """Load required configuration from environment variables."""
     load_dotenv()
@@ -41,7 +51,7 @@ def load_environment() -> dict[str, Any]:
     config = {
         "hopsworks_api_key": os.getenv("HOPSWORKS_API_KEY"),
         "hopsworks_project": os.getenv("HOPSWORKS_PROJECT", "pearls_aqi_predictor"),
-        "hopsworks_host": os.getenv("HOPSWORKS_HOST", "run.hopsworks.ai"),
+        "hopsworks_host": os.getenv("HOPSWORKS_HOST", "eu-west.cloud.hopsworks.ai"),
         "hopsworks_port": int(os.getenv("HOPSWORKS_PORT", "443")),
         "feature_group": os.getenv("HOPSWORKS_FEATURE_GROUP", "karachi_aqi_features"),
         "feature_group_version": int(os.getenv("HOPSWORKS_FEATURE_GROUP_VERSION", "1")),
@@ -72,12 +82,21 @@ def connect_hopsworks(
             "hopsworks package is not installed. Install dependencies first."
         ) from exc
 
-    return hopsworks.login(
-        project=project_name,
-        host=host,
-        port=port,
-        api_key_value=api_key,
-    )
+    ensure_windows_hopsworks_tmp(host)
+
+    try:
+        return hopsworks.login(
+            project=project_name,
+            host=host,
+            port=port,
+            api_key_value=api_key,
+        )
+    except Exception as exc:
+        print(
+            "Host-specific login failed. Retrying with default Hopsworks endpoint: "
+            f"{exc}"
+        )
+        return hopsworks.login(project=project_name, api_key_value=api_key)
 
 
 def fetch_feature_group_dataframe(
