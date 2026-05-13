@@ -1,21 +1,25 @@
-"""FastAPI serving layer for AQI forecast inference."""
+"""FastAPI serving layer for AQI forecast inference and explainability."""
 
 from __future__ import annotations
 
-import os
 import json
+import importlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import joblib
+import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, ConfigDict
 
 
-LOCAL_ARTIFACTS_DIR = Path("artifacts/models")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_PATH = PROJECT_ROOT / ".env"
+LOCAL_ARTIFACTS_DIR = PROJECT_ROOT / "artifacts/models"
 
 
 @dataclass
@@ -33,13 +37,33 @@ state = RuntimeState()
 class PredictionResponse(BaseModel):
     """Prediction payload returned by the API."""
 
-    model_config = {"protected_namespaces": ()}
+    model_config = ConfigDict(protected_namespaces=())
 
     model_source: str
     city: str
     generated_from_timestamp: str
     pm2_5_forecast: dict[str, float]
     hazardous_alert: bool
+
+
+class FeatureExplanation(BaseModel):
+    """One feature contribution score from SHAP."""
+
+    feature: str
+    shap_value: float
+    abs_shap_value: float
+
+
+class ExplainResponse(BaseModel):
+    """Explainability payload for latest prediction."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_source: str
+    city: str
+    generated_from_timestamp: str
+    horizon: str
+    top_features: list[FeatureExplanation]
 
 
 def ensure_windows_hopsworks_tmp(host: str) -> None:
@@ -54,7 +78,7 @@ def ensure_windows_hopsworks_tmp(host: str) -> None:
 
 def load_config() -> dict[str, Any]:
     """Load runtime configuration from environment."""
-    load_dotenv()
+    load_dotenv(dotenv_path=ENV_PATH)
     return {
         "hopsworks_api_key": os.getenv("HOPSWORKS_API_KEY"),
         "hopsworks_project": os.getenv("HOPSWORKS_PROJECT", "pearls_aqi_predictor"),
@@ -65,6 +89,7 @@ def load_config() -> dict[str, Any]:
         "model_name": os.getenv("HOPSWORKS_MODEL_NAME", "karachi_aqi_forecaster"),
         "model_version": os.getenv("HOPSWORKS_MODEL_VERSION"),
         "default_city": os.getenv("DEFAULT_CITY", "Karachi"),
+        "hazardous_pm25_threshold": float(os.getenv("HAZARDOUS_PM25_THRESHOLD", "250.5")),
     }
 
 
@@ -95,7 +120,10 @@ def connect_hopsworks(config: dict[str, Any]) -> Any:
         )
 
 
-def _download_model_from_registry(project: Any, config: dict[str, Any]) -> tuple[Any, list[str], str]:
+def _download_model_from_registry(
+    project: Any,
+    config: dict[str, Any],
+) -> tuple[Any, list[str], str]:
     """Try downloading latest model artifact from Hopsworks Model Registry."""
     model_registry = project.get_model_registry()
     model_name = config["model_name"]
@@ -159,14 +187,10 @@ def _load_latest_local_model() -> tuple[Any, list[str], str]:
 
     metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
     feature_columns_raw = metadata.get("feature_columns")
-    if isinstance(feature_columns_raw, dict):
-        feature_columns = list(feature_columns_raw.values())
-    elif isinstance(feature_columns_raw, list):
-        feature_columns = feature_columns_raw
-    else:
+    if not isinstance(feature_columns_raw, list):
         raise RuntimeError("metadata.json missing feature_columns in local artifact.")
 
-    return joblib.load(model_file), feature_columns, f"local_artifact:{latest_dir.name}"
+    return joblib.load(model_file), feature_columns_raw, f"local_artifact:{latest_dir.name}"
 
 
 def load_serving_model() -> tuple[Any, list[str], str]:
@@ -180,8 +204,8 @@ def load_serving_model() -> tuple[Any, list[str], str]:
         return _load_latest_local_model()
 
 
-def fetch_latest_feature_row(project: Any, config: dict[str, Any]) -> pd.DataFrame:
-    """Fetch latest row from feature group and return as dataframe."""
+def fetch_feature_data(project: Any, config: dict[str, Any]) -> pd.DataFrame:
+    """Fetch feature group dataframe sorted by timestamp."""
     feature_store = project.get_feature_store()
     feature_group = feature_store.get_feature_group(
         name=config["feature_group"],
@@ -196,11 +220,11 @@ def fetch_latest_feature_row(project: Any, config: dict[str, Any]) -> pd.DataFra
 
     df = df.copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     if df.empty:
         raise RuntimeError("Feature group has no valid timestamp rows.")
 
-    return df.tail(1)
+    return df
 
 
 def get_or_load_model() -> tuple[Any, list[str], str]:
@@ -211,20 +235,38 @@ def get_or_load_model() -> tuple[Any, list[str], str]:
     return state.model, state.feature_columns, state.model_source
 
 
+def _latest_row_and_matrix(
+    full_df: pd.DataFrame,
+    feature_columns: list[str],
+) -> tuple[pd.Series, pd.DataFrame]:
+    """Prepare latest inference row and full clean matrix for SHAP background."""
+    missing_cols = [col for col in feature_columns if col not in full_df.columns]
+    if missing_cols:
+        raise RuntimeError(f"Missing required features: {missing_cols}")
+
+    matrix = full_df[feature_columns].copy()
+    matrix = cast(pd.DataFrame, matrix.replace([np.inf, -np.inf], np.nan).dropna())
+    if matrix.empty:
+        raise RuntimeError("No valid feature rows after null filtering.")
+
+    valid_df = cast(pd.DataFrame, full_df.loc[matrix.index].copy())
+    latest_row = cast(pd.Series, valid_df.iloc[-1])
+
+    matrix = cast(pd.DataFrame, matrix.reset_index(drop=True))
+    return latest_row, matrix
+
+
 def make_prediction() -> PredictionResponse:
     """Compute latest +24h/+48h/+72h PM2.5 forecast."""
     config = load_config()
-    project = connect_hopsworks(config)
-    latest = fetch_latest_feature_row(project, config)
-
     model, feature_columns, model_source = get_or_load_model()
 
-    missing_cols = [col for col in feature_columns if col not in latest.columns]
-    if missing_cols:
-        raise RuntimeError(f"Missing required features for prediction: {missing_cols}")
+    project = connect_hopsworks(config)
+    feature_df = fetch_feature_data(project, config)
+    latest_row, matrix = _latest_row_and_matrix(feature_df, feature_columns)
 
-    X = latest[feature_columns].copy()
-    y_pred = model.predict(X)
+    X_latest = matrix.tail(1)
+    y_pred = model.predict(X_latest)
     if len(y_pred.shape) != 2 or y_pred.shape[1] < 3:
         raise RuntimeError("Model output shape is invalid for 3-horizon prediction.")
 
@@ -233,18 +275,92 @@ def make_prediction() -> PredictionResponse:
         "+48h": float(y_pred[0][1]),
         "+72h": float(y_pred[0][2]),
     }
-    hazardous = any(value >= 250.5 for value in forecast.values())
+    hazardous = any(value >= config["hazardous_pm25_threshold"] for value in forecast.values())
 
     return PredictionResponse(
         model_source=model_source,
         city=config["default_city"],
-        generated_from_timestamp=str(latest.iloc[0]["timestamp"]),
+        generated_from_timestamp=str(latest_row["timestamp"]),
         pm2_5_forecast=forecast,
         hazardous_alert=hazardous,
     )
 
 
-app = FastAPI(title="Karachi AQI Forecast API", version="0.1.0")
+def make_explanation(max_features: int = 10) -> ExplainResponse:
+    """Return LIME top feature contributions for latest +24h prediction."""
+    try:
+        lime_tabular = importlib.import_module("lime.lime_tabular")
+    except ImportError as exc:
+        raise RuntimeError("LIME is not installed. Add lime to requirements.") from exc
+
+    config = load_config()
+    model, feature_columns, model_source = get_or_load_model()
+
+    project = connect_hopsworks(config)
+    feature_df = fetch_feature_data(project, config)
+    latest_row, matrix = _latest_row_and_matrix(feature_df, feature_columns)
+
+    sample_size = min(1000, len(matrix))
+    background = matrix.tail(sample_size)
+    X_latest = matrix.tail(1)
+
+    explainer = lime_tabular.LimeTabularExplainer(
+        training_data=background.to_numpy(dtype=float),
+        feature_names=feature_columns,
+        mode="regression",
+        random_state=42,
+    )
+
+    def predict_24h(values: np.ndarray) -> np.ndarray:
+        preds = model.predict(values)
+        if len(preds.shape) != 2 or preds.shape[1] < 1:
+            raise RuntimeError("Model output shape is invalid for explanation.")
+        return preds[:, 0]
+
+    explanation = explainer.explain_instance(
+        data_row=X_latest.iloc[0].to_numpy(dtype=float),
+        predict_fn=predict_24h,
+        num_features=max_features,
+    )
+
+    weight_map = dict(explanation.as_list())
+    rows = []
+    for expression, weight in weight_map.items():
+        matched_feature = next(
+            (name for name in feature_columns if name in expression),
+            expression,
+        )
+        rows.append(
+            {
+                "feature": matched_feature,
+                "shap_value": float(weight),
+                "abs_shap_value": float(abs(weight)),
+            }
+        )
+
+    explanation_df = pd.DataFrame(rows)
+    explanation_df = explanation_df.drop_duplicates(subset=["feature"])
+    explanation_df = explanation_df.sort_values("abs_shap_value", ascending=False).head(max_features)
+
+    top_features = [
+        FeatureExplanation(
+            feature=str(row["feature"]),
+            shap_value=float(row["shap_value"]),
+            abs_shap_value=float(row["abs_shap_value"]),
+        )
+        for _, row in explanation_df.iterrows()
+    ]
+
+    return ExplainResponse(
+        model_source=model_source,
+        city=config["default_city"],
+        generated_from_timestamp=str(latest_row["timestamp"]),
+        horizon="+24h",
+        top_features=top_features,
+    )
+
+
+app = FastAPI(title="Karachi AQI Forecast API", version="0.2.0")
 
 
 @app.get("/health")
@@ -260,3 +376,14 @@ def predict_latest() -> PredictionResponse:
         return make_prediction()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {exc}") from exc
+
+
+@app.get("/predict/latest/explain", response_model=ExplainResponse)
+def predict_latest_explain(
+    max_features: int = Query(default=10, ge=3, le=25),
+) -> ExplainResponse:
+    """Return SHAP explanation for latest +24h prediction."""
+    try:
+        return make_explanation(max_features=max_features)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Explainability failed: {exc}") from exc

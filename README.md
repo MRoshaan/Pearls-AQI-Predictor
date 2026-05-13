@@ -1,7 +1,7 @@
 # Pearls AQI Predictor
 
 End-to-end Air Quality Index (AQI) prediction service focused on Karachi, Pakistan.
-Current phase: **Week 3 - Model Training and Model Registry**.
+Current phase: **Week 5 - Serving API and Dashboard Interface**.
 
 ## Project Status
 
@@ -111,12 +111,30 @@ uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
 Available endpoints:
 - `GET /health`
 - `GET /predict/latest`
+- `GET /predict/latest/explain?max_features=10`
 
 `/predict/latest` will:
 - load the latest model from Hopsworks Model Registry (fallback to local artifacts)
 - read latest features from Hopsworks Feature Store
 - predict PM2.5 for +24h, +48h, +72h
 - return a hazardous alert flag when forecast crosses PM2.5 hazardous threshold
+
+### 8) Run Streamlit Dashboard (Week 5)
+
+```bash
+streamlit run src/app/dashboard.py
+```
+
+If your API is running on a different host/port:
+
+```bash
+API_BASE_URL=http://127.0.0.1:8000 streamlit run src/app/dashboard.py
+```
+
+Dashboard capabilities:
+- shows +24h/+48h/+72h PM2.5 forecasts from FastAPI backend
+- displays hazardous AQI visual alert
+- renders LIME top feature contributions for latest +24h prediction
 
 This script:
 - pulls historical features/targets from Hopsworks
@@ -128,7 +146,7 @@ This script:
 
 ## Next Suggested Milestones
 
-- Streamlit or Gradio dashboard UI on top of FastAPI
-- Explainability with SHAP/LIME
-- Frontend AQI alert visualization and UX refinement
-- Full serverless deployment hardening and production monitoring
+- End-to-end integration tests for API and dashboard paths
+- CI reliability hardening and failure alerting
+- PEP 8 cleanup and modular refactoring across scripts
+- Final comprehensive architecture and experiment report
