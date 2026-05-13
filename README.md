@@ -102,6 +102,22 @@ python src/features/push_to_hopsworks.py
 python src/models/train_model.py
 ```
 
+### 7) Run FastAPI Serving Layer (Week 5)
+
+```bash
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Available endpoints:
+- `GET /health`
+- `GET /predict/latest`
+
+`/predict/latest` will:
+- load the latest model from Hopsworks Model Registry (fallback to local artifacts)
+- read latest features from Hopsworks Feature Store
+- predict PM2.5 for +24h, +48h, +72h
+- return a hazardous alert flag when forecast crosses PM2.5 hazardous threshold
+
 This script:
 - pulls historical features/targets from Hopsworks
 - trains baseline models (Ridge, Random Forest)
@@ -112,7 +128,7 @@ This script:
 
 ## Next Suggested Milestones
 
-- Hourly/daily CI pipeline automation
-- Prediction API + dashboard + AQI alerting
+- Streamlit or Gradio dashboard UI on top of FastAPI
 - Explainability with SHAP/LIME
-- Full serverless deployment hardening
+- Frontend AQI alert visualization and UX refinement
+- Full serverless deployment hardening and production monitoring

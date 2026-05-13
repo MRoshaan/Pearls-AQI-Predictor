@@ -22,6 +22,7 @@ dist/
 # Data artifacts
 data/raw/*.csv
 data/processed/
+artifacts/models/
 
 # Tooling caches
 .pytest_cache/

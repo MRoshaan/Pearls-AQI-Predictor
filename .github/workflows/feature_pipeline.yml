@@ -1,0 +1,38 @@
+name: Hourly Feature Pipeline
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  build-features:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run historical ingestion
+        run: python src/data/historical_ingestion.py
+
+      - name: Build engineered features
+        run: python src/features/build_features.py
+
+      - name: Push features to Hopsworks
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+          HOPSWORKS_PROJECT: ${{ secrets.HOPSWORKS_PROJECT }}
+          HOPSWORKS_HOST: ${{ secrets.HOPSWORKS_HOST }}
+          HOPSWORKS_PORT: ${{ secrets.HOPSWORKS_PORT }}
+          HOPSWORKS_FEATURE_GROUP: ${{ secrets.HOPSWORKS_FEATURE_GROUP }}
+          HOPSWORKS_FEATURE_GROUP_VERSION: ${{ secrets.HOPSWORKS_FEATURE_GROUP_VERSION }}
+        run: python src/features/push_to_hopsworks.py
