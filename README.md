@@ -133,8 +133,13 @@ API_BASE_URL=http://127.0.0.1:8000 streamlit run src/app/dashboard.py
 
 Dashboard capabilities:
 - shows +24h/+48h/+72h PM2.5 forecasts (ug/m^3) from FastAPI backend
+- converts PM2.5 to AQI index using US EPA PM2.5 breakpoints for display
 - displays hazardous AQI visual alert
 - renders LIME top feature contributions for latest +24h prediction
+
+Serving reliability notes:
+- FastAPI caches fetched feature data in-memory for a short TTL to reduce repeated Feature Store reads.
+- Configure cache window with `FEATURE_CACHE_TTL_SECONDS` (default: `120`).
 
 This script:
 - pulls historical features/targets from Hopsworks

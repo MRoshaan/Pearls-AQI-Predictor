@@ -15,17 +15,37 @@ st.set_page_config(page_title="Karachi PM2.5 Forecast", page_icon="AQI", layout=
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
 
-def aqi_band(pm25: float) -> tuple[str, str]:
-    """Map PM2.5 concentration to AQI-style health band."""
-    if pm25 <= 12:
+def pm25_to_aqi(pm25: float) -> int:
+    """Convert PM2.5 concentration (ug/m^3) to US EPA AQI."""
+    breakpoints = [
+        (0.0, 12.0, 0, 50),
+        (12.1, 35.4, 51, 100),
+        (35.5, 55.4, 101, 150),
+        (55.5, 150.4, 151, 200),
+        (150.5, 250.4, 201, 300),
+        (250.5, 350.4, 301, 400),
+        (350.5, 500.4, 401, 500),
+    ]
+
+    clamped = max(0.0, min(pm25, 500.4))
+    for c_low, c_high, i_low, i_high in breakpoints:
+        if c_low <= clamped <= c_high:
+            aqi = ((i_high - i_low) / (c_high - c_low)) * (clamped - c_low) + i_low
+            return int(round(aqi))
+    return 500
+
+
+def aqi_category(aqi: int) -> tuple[str, str]:
+    """Map AQI numeric value to category and color."""
+    if aqi <= 50:
         return "Good", "#2e7d32"
-    if pm25 <= 35.4:
+    if aqi <= 100:
         return "Moderate", "#ef6c00"
-    if pm25 <= 55.4:
+    if aqi <= 150:
         return "Unhealthy (Sensitive)", "#f9a825"
-    if pm25 <= 150.4:
+    if aqi <= 200:
         return "Unhealthy", "#d32f2f"
-    if pm25 <= 250.4:
+    if aqi <= 300:
         return "Very Unhealthy", "#6a1b9a"
     return "Hazardous", "#4e342e"
 
@@ -41,10 +61,7 @@ def render_header() -> None:
     """Render dashboard heading and context."""
     st.title("Karachi PM2.5 3-Day Forecast")
     st.caption("Live PM2.5 concentration forecast from Hopsworks model registry and feature store")
-    st.info(
-        "Predictions show PM2.5 concentration in ug/m^3 (micrograms per cubic meter), "
-        "not direct AQI index values."
-    )
+    st.info("Predictions show PM2.5 in ug/m^3 and converted AQI index (US EPA formula).")
 
 
 def render_hazard_banner(is_hazardous: bool) -> None:
@@ -61,14 +78,16 @@ def render_forecast_cards(payload: dict[str, Any]) -> None:
     order = ["+24h", "+48h", "+72h"]
 
     for col, horizon in zip(cols, order):
-        value = float(payload["pm2_5_forecast"][horizon])
-        band, color = aqi_band(value)
+        pm25_value = float(payload["pm2_5_forecast"][horizon])
+        aqi_value = pm25_to_aqi(pm25_value)
+        band, color = aqi_category(aqi_value)
         with col:
             st.markdown(
                 (
-                    f"<div style='padding:1rem;border-radius:14px;border:1px solid #ddd;'>"
+                    "<div style='padding:1rem;border-radius:14px;border:1px solid #ddd;'>"
                     f"<div style='font-size:0.9rem;color:#666'>{horizon}</div>"
-                    f"<div style='font-size:2rem;font-weight:700'>{value:.2f} ug/m^3</div>"
+                    f"<div style='font-size:2rem;font-weight:700'>{pm25_value:.2f} ug/m^3</div>"
+                    f"<div style='font-size:1rem;color:#99a'>AQI: {aqi_value}</div>"
                     f"<div style='color:{color};font-weight:600'>{band}</div>"
                     "</div>"
                 ),
@@ -99,10 +118,7 @@ def render_explainability(payload: dict[str, Any]) -> None:
     st.dataframe(df, use_container_width=True)
 
     chart_df = df.sort_values("abs_explanation_score", ascending=True)
-    st.bar_chart(
-        chart_df.set_index("feature")["explanation_score"],
-        horizontal=True,
-    )
+    st.bar_chart(chart_df.set_index("feature")["explanation_score"], horizontal=True)
 
 
 def main() -> None:

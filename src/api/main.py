@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import importlib
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -30,6 +31,9 @@ class RuntimeState:
     model: Any | None = None
     feature_columns: list[str] | None = None
     model_source: str | None = None
+    feature_df: pd.DataFrame | None = None
+    feature_source: str | None = None
+    feature_fetched_at: float | None = None
 
 
 state = RuntimeState()
@@ -94,6 +98,7 @@ def load_config() -> dict[str, Any]:
         "model_version": os.getenv("HOPSWORKS_MODEL_VERSION"),
         "default_city": os.getenv("DEFAULT_CITY", "Karachi"),
         "hazardous_pm25_threshold": float(os.getenv("HAZARDOUS_PM25_THRESHOLD", "250.5")),
+        "feature_cache_ttl_seconds": int(os.getenv("FEATURE_CACHE_TTL_SECONDS", "120")),
     }
 
 
@@ -258,6 +263,26 @@ def fetch_feature_data_with_fallback(config: dict[str, Any]) -> tuple[pd.DataFra
         return load_local_feature_data(), "local_features_csv"
 
 
+def get_cached_feature_data(config: dict[str, Any]) -> tuple[pd.DataFrame, str]:
+    """Return cached feature dataframe if fresh, otherwise fetch and cache."""
+    now = time.time()
+    ttl = max(0, int(config.get("feature_cache_ttl_seconds", 120)))
+
+    if (
+        state.feature_df is not None
+        and state.feature_source is not None
+        and state.feature_fetched_at is not None
+        and (now - state.feature_fetched_at) <= ttl
+    ):
+        return state.feature_df, state.feature_source
+
+    feature_df, feature_source = fetch_feature_data_with_fallback(config)
+    state.feature_df = feature_df
+    state.feature_source = feature_source
+    state.feature_fetched_at = now
+    return feature_df, feature_source
+
+
 def get_or_load_model() -> tuple[Any, list[str], str]:
     """Return cached model, loading once per process."""
     if state.model is None or state.feature_columns is None or state.model_source is None:
@@ -292,7 +317,7 @@ def make_prediction() -> PredictionResponse:
     config = load_config()
     model, feature_columns, model_source = get_or_load_model()
 
-    feature_df, feature_source = fetch_feature_data_with_fallback(config)
+    feature_df, feature_source = get_cached_feature_data(config)
     latest_row, matrix = _latest_row_and_matrix(feature_df, feature_columns)
 
     X_latest = matrix.tail(1)
@@ -328,7 +353,7 @@ def make_explanation(max_features: int = 10) -> ExplainResponse:
     config = load_config()
     model, feature_columns, model_source = get_or_load_model()
 
-    feature_df, feature_source = fetch_feature_data_with_fallback(config)
+    feature_df, feature_source = get_cached_feature_data(config)
     latest_row, matrix = _latest_row_and_matrix(feature_df, feature_columns)
 
     sample_size = min(1000, len(matrix))
@@ -343,7 +368,8 @@ def make_explanation(max_features: int = 10) -> ExplainResponse:
     )
 
     def predict_24h(values: np.ndarray) -> np.ndarray:
-        preds = model.predict(values)
+        values_df = pd.DataFrame(values, columns=feature_columns)
+        preds = model.predict(values_df)
         if len(preds.shape) != 2 or preds.shape[1] < 1:
             raise RuntimeError("Model output shape is invalid for explanation.")
         return preds[:, 0]
