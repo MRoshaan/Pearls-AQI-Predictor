@@ -1,4 +1,4 @@
-"""Streamlit dashboard for AQI forecasting and explainability."""
+"""Streamlit dashboard for PM2.5 forecasting and explainability."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import requests
 import streamlit as st
 
 
-st.set_page_config(page_title="Karachi AQI Forecast", page_icon="AQI", layout="wide")
+st.set_page_config(page_title="Karachi PM2.5 Forecast", page_icon="AQI", layout="wide")
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
@@ -39,8 +39,12 @@ def get_json(endpoint: str) -> dict[str, Any]:
 
 def render_header() -> None:
     """Render dashboard heading and context."""
-    st.title("Karachi AQI 3-Day Forecast")
-    st.caption("Live PM2.5 forecast from Hopsworks model registry and feature store")
+    st.title("Karachi PM2.5 3-Day Forecast")
+    st.caption("Live PM2.5 concentration forecast from Hopsworks model registry and feature store")
+    st.info(
+        "Predictions show PM2.5 concentration in ug/m^3 (micrograms per cubic meter), "
+        "not direct AQI index values."
+    )
 
 
 def render_hazard_banner(is_hazardous: bool) -> None:
@@ -64,7 +68,7 @@ def render_forecast_cards(payload: dict[str, Any]) -> None:
                 (
                     f"<div style='padding:1rem;border-radius:14px;border:1px solid #ddd;'>"
                     f"<div style='font-size:0.9rem;color:#666'>{horizon}</div>"
-                    f"<div style='font-size:2rem;font-weight:700'>{value:.2f}</div>"
+                    f"<div style='font-size:2rem;font-weight:700'>{value:.2f} ug/m^3</div>"
                     f"<div style='color:{color};font-weight:600'>{band}</div>"
                     "</div>"
                 ),
@@ -78,11 +82,14 @@ def render_metadata(payload: dict[str, Any]) -> None:
     st.write(f"City: `{payload['city']}`")
     st.write(f"Source timestamp: `{payload['generated_from_timestamp']}`")
     st.write(f"Model source: `{payload['model_source']}`")
+    st.write(f"Feature source: `{payload.get('feature_source', 'unknown')}`")
+    st.write(f"Prediction unit: `{payload.get('prediction_unit', 'ug/m^3')}`")
 
 
 def render_explainability(payload: dict[str, Any]) -> None:
-    """Render SHAP top-contributor table and chart."""
+    """Render LIME top-contributor table and chart."""
     st.markdown("### Why the model predicted this")
+    st.caption("Feature contribution scores are from LIME for the +24h forecast horizon.")
     top = payload.get("top_features", [])
     if not top:
         st.info("No explainability results returned.")
@@ -91,9 +98,9 @@ def render_explainability(payload: dict[str, Any]) -> None:
     df = pd.DataFrame(top)
     st.dataframe(df, use_container_width=True)
 
-    chart_df = df.sort_values("abs_shap_value", ascending=True)
+    chart_df = df.sort_values("abs_explanation_score", ascending=True)
     st.bar_chart(
-        chart_df.set_index("feature")["shap_value"],
+        chart_df.set_index("feature")["explanation_score"],
         horizontal=True,
     )
 

@@ -1,6 +1,6 @@
 # Pearls AQI Predictor
 
-End-to-end Air Quality Index (AQI) prediction service focused on Karachi, Pakistan.
+End-to-end PM2.5 forecasting service with AQI-style risk bands focused on Karachi, Pakistan.
 Current phase: **Week 5 - Serving API and Dashboard Interface**.
 
 ## Project Status
@@ -115,8 +115,8 @@ Available endpoints:
 
 `/predict/latest` will:
 - load the latest model from Hopsworks Model Registry (fallback to local artifacts)
-- read latest features from Hopsworks Feature Store
-- predict PM2.5 for +24h, +48h, +72h
+- read latest features from Hopsworks Feature Store (fallback to local `data/processed/karachi_features.csv`)
+- predict PM2.5 concentration (ug/m^3) for +24h, +48h, +72h
 - return a hazardous alert flag when forecast crosses PM2.5 hazardous threshold
 
 ### 8) Run Streamlit Dashboard (Week 5)
@@ -132,7 +132,7 @@ API_BASE_URL=http://127.0.0.1:8000 streamlit run src/app/dashboard.py
 ```
 
 Dashboard capabilities:
-- shows +24h/+48h/+72h PM2.5 forecasts from FastAPI backend
+- shows +24h/+48h/+72h PM2.5 forecasts (ug/m^3) from FastAPI backend
 - displays hazardous AQI visual alert
 - renders LIME top feature contributions for latest +24h prediction
 

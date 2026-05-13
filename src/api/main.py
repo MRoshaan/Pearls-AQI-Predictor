@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_PATH = PROJECT_ROOT / ".env"
 LOCAL_ARTIFACTS_DIR = PROJECT_ROOT / "artifacts/models"
+LOCAL_FEATURES_PATH = PROJECT_ROOT / "data/processed/karachi_features.csv"
 
 
 @dataclass
@@ -40,18 +41,20 @@ class PredictionResponse(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_source: str
+    feature_source: str
     city: str
     generated_from_timestamp: str
+    prediction_unit: str
     pm2_5_forecast: dict[str, float]
     hazardous_alert: bool
 
 
 class FeatureExplanation(BaseModel):
-    """One feature contribution score from SHAP."""
+    """One feature contribution score from LIME."""
 
     feature: str
-    shap_value: float
-    abs_shap_value: float
+    explanation_score: float
+    abs_explanation_score: float
 
 
 class ExplainResponse(BaseModel):
@@ -60,6 +63,7 @@ class ExplainResponse(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_source: str
+    feature_source: str
     city: str
     generated_from_timestamp: str
     horizon: str
@@ -227,6 +231,33 @@ def fetch_feature_data(project: Any, config: dict[str, Any]) -> pd.DataFrame:
     return df
 
 
+def load_local_feature_data() -> pd.DataFrame:
+    """Load locally engineered features as resilience fallback."""
+    if not LOCAL_FEATURES_PATH.exists():
+        raise RuntimeError(f"Local features file not found: {LOCAL_FEATURES_PATH}")
+
+    df = pd.read_csv(LOCAL_FEATURES_PATH)
+    if "timestamp" not in df.columns:
+        raise RuntimeError("Local features file missing timestamp column.")
+
+    df = df.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    if df.empty:
+        raise RuntimeError("Local features file has no valid timestamp rows.")
+
+    return df
+
+
+def fetch_feature_data_with_fallback(config: dict[str, Any]) -> tuple[pd.DataFrame, str]:
+    """Try Hopsworks feature data first, fallback to local features CSV."""
+    try:
+        project = connect_hopsworks(config)
+        return fetch_feature_data(project, config), "hopsworks_feature_store"
+    except Exception:
+        return load_local_feature_data(), "local_features_csv"
+
+
 def get_or_load_model() -> tuple[Any, list[str], str]:
     """Return cached model, loading once per process."""
     if state.model is None or state.feature_columns is None or state.model_source is None:
@@ -239,7 +270,7 @@ def _latest_row_and_matrix(
     full_df: pd.DataFrame,
     feature_columns: list[str],
 ) -> tuple[pd.Series, pd.DataFrame]:
-    """Prepare latest inference row and full clean matrix for SHAP background."""
+    """Prepare latest inference row and full clean matrix for explainability."""
     missing_cols = [col for col in feature_columns if col not in full_df.columns]
     if missing_cols:
         raise RuntimeError(f"Missing required features: {missing_cols}")
@@ -261,8 +292,7 @@ def make_prediction() -> PredictionResponse:
     config = load_config()
     model, feature_columns, model_source = get_or_load_model()
 
-    project = connect_hopsworks(config)
-    feature_df = fetch_feature_data(project, config)
+    feature_df, feature_source = fetch_feature_data_with_fallback(config)
     latest_row, matrix = _latest_row_and_matrix(feature_df, feature_columns)
 
     X_latest = matrix.tail(1)
@@ -279,8 +309,10 @@ def make_prediction() -> PredictionResponse:
 
     return PredictionResponse(
         model_source=model_source,
+        feature_source=feature_source,
         city=config["default_city"],
         generated_from_timestamp=str(latest_row["timestamp"]),
+        prediction_unit="ug/m^3",
         pm2_5_forecast=forecast,
         hazardous_alert=hazardous,
     )
@@ -296,8 +328,7 @@ def make_explanation(max_features: int = 10) -> ExplainResponse:
     config = load_config()
     model, feature_columns, model_source = get_or_load_model()
 
-    project = connect_hopsworks(config)
-    feature_df = fetch_feature_data(project, config)
+    feature_df, feature_source = fetch_feature_data_with_fallback(config)
     latest_row, matrix = _latest_row_and_matrix(feature_df, feature_columns)
 
     sample_size = min(1000, len(matrix))
@@ -333,26 +364,29 @@ def make_explanation(max_features: int = 10) -> ExplainResponse:
         rows.append(
             {
                 "feature": matched_feature,
-                "shap_value": float(weight),
-                "abs_shap_value": float(abs(weight)),
+                "explanation_score": float(weight),
+                "abs_explanation_score": float(abs(weight)),
             }
         )
 
     explanation_df = pd.DataFrame(rows)
     explanation_df = explanation_df.drop_duplicates(subset=["feature"])
-    explanation_df = explanation_df.sort_values("abs_shap_value", ascending=False).head(max_features)
+    explanation_df = explanation_df.sort_values(
+        "abs_explanation_score", ascending=False
+    ).head(max_features)
 
     top_features = [
         FeatureExplanation(
             feature=str(row["feature"]),
-            shap_value=float(row["shap_value"]),
-            abs_shap_value=float(row["abs_shap_value"]),
+            explanation_score=float(row["explanation_score"]),
+            abs_explanation_score=float(row["abs_explanation_score"]),
         )
         for _, row in explanation_df.iterrows()
     ]
 
     return ExplainResponse(
         model_source=model_source,
+        feature_source=feature_source,
         city=config["default_city"],
         generated_from_timestamp=str(latest_row["timestamp"]),
         horizon="+24h",
@@ -382,7 +416,7 @@ def predict_latest() -> PredictionResponse:
 def predict_latest_explain(
     max_features: int = Query(default=10, ge=3, le=25),
 ) -> ExplainResponse:
-    """Return SHAP explanation for latest +24h prediction."""
+    """Return LIME explanation for latest +24h prediction."""
     try:
         return make_explanation(max_features=max_features)
     except Exception as exc:
