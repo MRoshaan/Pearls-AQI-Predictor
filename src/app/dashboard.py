@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -72,6 +73,27 @@ def render_hazard_banner(is_hazardous: bool) -> None:
         st.success("Forecast is below hazardous PM2.5 threshold.")
 
 
+def render_freshness_banner(payload: dict[str, Any]) -> None:
+    """Show warning if source data is stale."""
+    raw_ts = payload.get("generated_from_timestamp")
+    if not raw_ts:
+        return
+
+    try:
+        ts = pd.to_datetime(raw_ts, utc=True)
+    except Exception:
+        return
+
+    now = datetime.now(timezone.utc)
+    age_hours = (now - ts.to_pydatetime()).total_seconds() / 3600
+
+    if age_hours > 24:
+        st.warning(
+            f"Data freshness warning: latest feature timestamp is about {age_hours:.1f} hours old "
+            f"({ts.strftime('%Y-%m-%d %H:%M:%S %Z')})."
+        )
+
+
 def render_forecast_cards(payload: dict[str, Any]) -> None:
     """Render forecast cards for +24h/+48h/+72h horizons."""
     cols = st.columns(3)
@@ -138,6 +160,7 @@ def main() -> None:
         st.stop()
 
     render_hazard_banner(bool(prediction["hazardous_alert"]))
+    render_freshness_banner(prediction)
     render_forecast_cards(prediction)
     render_metadata(prediction)
     render_explainability(explanation)

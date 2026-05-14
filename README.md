@@ -90,6 +90,12 @@ python src/data/eda_karachi.py
 python src/features/build_features.py
 ```
 
+This step now merges:
+- historical Open-Meteo hourly data
+- latest AQICN live snapshot (`data/raw/karachi_aqi_raw.csv`)
+
+so the most recent timestamp can stay closer to real-time.
+
 ### 5) Push Features to Hopsworks
 
 ```bash
@@ -135,6 +141,7 @@ Dashboard capabilities:
 - shows +24h/+48h/+72h PM2.5 forecasts (ug/m^3) from FastAPI backend
 - converts PM2.5 to AQI index using US EPA PM2.5 breakpoints for display
 - displays hazardous AQI visual alert
+- shows a data freshness warning when latest feature timestamp is older than 24 hours
 - renders LIME top feature contributions for latest +24h prediction
 
 Serving reliability notes:

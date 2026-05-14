@@ -29,9 +29,14 @@ def load_features(path: Path) -> pd.DataFrame:
             f"Features file not found at {path}. Run src/features/build_features.py first."
         )
 
-    df = pd.read_csv(path, parse_dates=["timestamp"])
+    df = pd.read_csv(path)
     if df.empty:
         raise ValueError("Features dataframe is empty. Nothing to upload.")
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", format="mixed")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    if df.empty:
+        raise ValueError("Features dataframe has no valid timestamp values after parsing.")
 
     return df
 

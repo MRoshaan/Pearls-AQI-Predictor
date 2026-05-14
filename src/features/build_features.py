@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
 
 INPUT_PATH = Path("data/raw/karachi_historical_aqi.csv")
+CURRENT_INPUT_PATH = Path("data/raw/karachi_aqi_raw.csv")
 OUTPUT_PATH = Path("data/processed/karachi_features.csv")
 
 
@@ -42,6 +44,78 @@ def load_historical_data(file_path: Path) -> pd.DataFrame:
         raise ValueError(f"Missing required pollutant columns: {missing_cols}")
 
     return df
+
+
+def load_current_snapshot(file_path: Path) -> pd.DataFrame:
+    """Load latest AQICN snapshot and align columns to historical schema."""
+    if not file_path.exists():
+        return pd.DataFrame()
+
+    current_df = pd.read_csv(file_path)
+    if current_df.empty:
+        return pd.DataFrame()
+
+    current_df = current_df.rename(
+        columns={
+            "pm25": "pm2_5",
+            "o3": "ozone",
+            "no2": "nitrogen_dioxide",
+            "so2": "sulphur_dioxide",
+            "co": "carbon_monoxide",
+        }
+    )
+
+    if "aqicn_time_iso" not in current_df.columns:
+        current_df["aqicn_time_iso"] = np.nan
+    if "ingested_at_utc" not in current_df.columns:
+        current_df["ingested_at_utc"] = np.nan
+
+    aqicn_ts = pd.to_datetime(current_df["aqicn_time_iso"], errors="coerce", utc=True)
+    ingested_ts = pd.to_datetime(current_df["ingested_at_utc"], errors="coerce", utc=True)
+
+    max_aqicn = aqicn_ts.max()
+    max_ingested = ingested_ts.max()
+
+    use_ingested_time = pd.isna(max_aqicn)
+    if not use_ingested_time and not pd.isna(max_ingested):
+        lag_hours = (max_ingested - max_aqicn).total_seconds() / 3600
+        use_ingested_time = lag_hours > 24
+
+    if use_ingested_time:
+        current_df["timestamp"] = ingested_ts.dt.tz_convert(None)
+    else:
+        current_df["timestamp"] = aqicn_ts.dt.tz_convert(None)
+
+    required_cols = [
+        "timestamp",
+        "pm2_5",
+        "pm10",
+        "carbon_monoxide",
+        "nitrogen_dioxide",
+        "sulphur_dioxide",
+        "ozone",
+    ]
+    for col in required_cols:
+        if col not in current_df.columns:
+            current_df[col] = np.nan
+
+    current_df = cast(pd.DataFrame, current_df[required_cols].copy())
+    mask = pd.notna(current_df["timestamp"])
+    current_df = cast(pd.DataFrame, current_df.loc[mask].copy())
+    if current_df.empty:
+        return pd.DataFrame()
+
+    return current_df.sort_values("timestamp").tail(1).reset_index(drop=True)
+
+
+def merge_historical_with_current(historical_df: pd.DataFrame, current_df: pd.DataFrame) -> pd.DataFrame:
+    """Append latest current snapshot to historical data and deduplicate by timestamp."""
+    if current_df.empty:
+        return historical_df
+
+    merged = pd.concat([historical_df, current_df], ignore_index=True)
+    merged = merged.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last")
+    return merged.reset_index(drop=True)
 
 
 def clean_time_series(df: pd.DataFrame) -> pd.DataFrame:
@@ -104,12 +178,24 @@ def save_features(df: pd.DataFrame, output_path: Path) -> None:
 def main() -> None:
     """Run full feature engineering pipeline for Karachi AQI."""
     df = load_historical_data(INPUT_PATH)
+    current_df = load_current_snapshot(CURRENT_INPUT_PATH)
+    df = merge_historical_with_current(df, current_df)
     df = clean_time_series(df)
     df = add_time_features(df)
     df = add_derived_features(df)
     df = add_targets(df)
 
-    df = df.dropna().reset_index(drop=True)
+    feature_only_cols = [
+        col
+        for col in df.columns
+        if col not in [
+            "timestamp",
+            "target_pm2_5_t_plus_24h",
+            "target_pm2_5_t_plus_48h",
+            "target_pm2_5_t_plus_72h",
+        ]
+    ]
+    df = df.dropna(subset=feature_only_cols).reset_index(drop=True)
     save_features(df, OUTPUT_PATH)
 
     print(f"Saved {len(df)} engineered rows to {OUTPUT_PATH}")
