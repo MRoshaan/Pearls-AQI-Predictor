@@ -122,6 +122,7 @@ def clean_time_series(df: pd.DataFrame) -> pd.DataFrame:
     """Clean missing values with forward and backward fill for time series."""
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     df[numeric_cols] = df[numeric_cols].ffill().bfill()
+    df = df.replace([np.inf, -np.inf], np.nan)
     return df
 
 
@@ -143,19 +144,37 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add lag, rolling, and AQI-change style derived features."""
+    """Add lag, rolling, volatility, and trend features."""
     df["aqi_proxy"] = df["pm2_5"]
     df["aqi_change_rate"] = df["aqi_proxy"].pct_change()
+    df["pm2_5_to_pm10_ratio"] = df["pm2_5"] / (df["pm10"] + 1e-6)
 
-    lag_hours = [1, 3, 24]
+    lag_hours = [1, 3, 6, 12, 24, 48, 72]
     for lag in lag_hours:
         df[f"pm2_5_lag_{lag}h"] = df["pm2_5"].shift(lag)
         df[f"pm10_lag_{lag}h"] = df["pm10"].shift(lag)
+        df[f"ozone_lag_{lag}h"] = df["ozone"].shift(lag)
+        df[f"nitrogen_dioxide_lag_{lag}h"] = df["nitrogen_dioxide"].shift(lag)
 
-    df["pm2_5_roll_mean_6h"] = df["pm2_5"].rolling(window=6).mean()
-    df["pm2_5_roll_mean_24h"] = df["pm2_5"].rolling(window=24).mean()
-    df["pm10_roll_mean_6h"] = df["pm10"].rolling(window=6).mean()
-    df["pm10_roll_mean_24h"] = df["pm10"].rolling(window=24).mean()
+    roll_windows = [6, 12, 24, 48, 72]
+    for window in roll_windows:
+        df[f"pm2_5_roll_mean_{window}h"] = df["pm2_5"].rolling(window=window).mean()
+        df[f"pm2_5_roll_std_{window}h"] = df["pm2_5"].rolling(window=window).std()
+        df[f"pm2_5_roll_min_{window}h"] = df["pm2_5"].rolling(window=window).min()
+        df[f"pm2_5_roll_max_{window}h"] = df["pm2_5"].rolling(window=window).max()
+
+        df[f"pm10_roll_mean_{window}h"] = df["pm10"].rolling(window=window).mean()
+        df[f"pm10_roll_std_{window}h"] = df["pm10"].rolling(window=window).std()
+
+    df["pm2_5_ewm_mean_12h"] = df["pm2_5"].ewm(span=12, adjust=False).mean()
+    df["pm2_5_ewm_mean_24h"] = df["pm2_5"].ewm(span=24, adjust=False).mean()
+    df["pm2_5_diff_1h"] = df["pm2_5"].diff(1)
+    df["pm2_5_diff_3h"] = df["pm2_5"].diff(3)
+    df["pm2_5_diff_24h"] = df["pm2_5"].diff(24)
+
+    df["day_of_year"] = df["timestamp"].dt.dayofyear
+    df["day_of_year_sin"] = np.sin(2 * np.pi * df["day_of_year"] / 365.25)
+    df["day_of_year_cos"] = np.cos(2 * np.pi * df["day_of_year"] / 365.25)
 
     return df
 

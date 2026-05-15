@@ -150,7 +150,8 @@ Serving reliability notes:
 
 This script:
 - pulls historical features/targets from Hopsworks
-- trains baseline models (Ridge, Random Forest)
+- trains horizon-specific models with walk-forward validation
+- tunes multiple model families (Ridge, Lasso, ElasticNet, Random Forest, Extra Trees)
 - optionally trains a TensorFlow MLP (`ENABLE_TENSORFLOW=true`)
 - evaluates using RMSE, MAE, R2
 - saves local artifacts under `artifacts/models/`

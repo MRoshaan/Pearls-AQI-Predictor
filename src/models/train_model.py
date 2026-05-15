@@ -1,9 +1,9 @@
 """Train AQI forecasting models using features from Hopsworks.
 
 This script pulls engineered features from the Hopsworks Feature Store,
-trains baseline multi-output regressors for +24h/+48h/+72h PM2.5 forecasts,
+trains horizon-specific regressors for +24h/+48h/+72h PM2.5 forecasts,
 evaluates model performance, saves local artifacts, and uploads the winning
-model to the Hopsworks Model Registry.
+model bundle to the Hopsworks Model Registry.
 """
 
 from __future__ import annotations
@@ -12,16 +12,15 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import joblib
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import Ridge
+from sklearn.ensemble import ExtraTreesRegressor, RandomForestRegressor
+from sklearn.linear_model import ElasticNet, Lasso, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.multioutput import MultiOutputRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -31,6 +30,22 @@ TARGET_COLUMNS = [
     "target_pm2_5_t_plus_24h",
     "target_pm2_5_t_plus_48h",
     "target_pm2_5_t_plus_72h",
+]
+RIDGE_ALPHAS = [0.1, 1.0, 3.0, 10.0, 30.0]
+LASSO_ALPHAS = [0.0005, 0.001, 0.003, 0.01, 0.03]
+ELASTICNET_CONFIGS = [
+    {"alpha": 0.001, "l1_ratio": 0.2},
+    {"alpha": 0.003, "l1_ratio": 0.5},
+    {"alpha": 0.01, "l1_ratio": 0.7},
+]
+RANDOM_FOREST_CONFIGS = [
+    {"n_estimators": 300, "max_depth": 20, "min_samples_split": 5},
+    {"n_estimators": 500, "max_depth": None, "min_samples_split": 2},
+    {"n_estimators": 400, "max_depth": 30, "min_samples_split": 3},
+]
+EXTRA_TREES_CONFIGS = [
+    {"n_estimators": 300, "max_depth": None, "min_samples_split": 2},
+    {"n_estimators": 500, "max_depth": 30, "min_samples_split": 2},
 ]
 
 
@@ -44,6 +59,30 @@ def ensure_windows_hopsworks_tmp(host: str) -> None:
     (tmp_root / host).mkdir(parents=True, exist_ok=True)
 
 
+def _as_int_env(raw_value: str | None, default: int) -> int:
+    """Parse integer env value with safe fallback."""
+    if raw_value is None:
+        return default
+
+    stripped = raw_value.strip()
+    if stripped == "":
+        return default
+
+    return int(stripped)
+
+
+def _as_float_env(raw_value: str | None, default: float) -> float:
+    """Parse float env value with safe fallback."""
+    if raw_value is None:
+        return default
+
+    stripped = raw_value.strip()
+    if stripped == "":
+        return default
+
+    return float(stripped)
+
+
 def load_environment() -> dict[str, Any]:
     """Load required configuration from environment variables."""
     load_dotenv()
@@ -52,14 +91,13 @@ def load_environment() -> dict[str, Any]:
         "hopsworks_api_key": os.getenv("HOPSWORKS_API_KEY"),
         "hopsworks_project": os.getenv("HOPSWORKS_PROJECT", "pearls_aqi_predictor"),
         "hopsworks_host": os.getenv("HOPSWORKS_HOST", "eu-west.cloud.hopsworks.ai"),
-        "hopsworks_port": int(os.getenv("HOPSWORKS_PORT", "443")),
+        "hopsworks_port": _as_int_env(os.getenv("HOPSWORKS_PORT"), 443),
         "feature_group": os.getenv("HOPSWORKS_FEATURE_GROUP", "karachi_aqi_features"),
-        "feature_group_version": int(os.getenv("HOPSWORKS_FEATURE_GROUP_VERSION", "1")),
+        "feature_group_version": _as_int_env(os.getenv("HOPSWORKS_FEATURE_GROUP_VERSION"), 1),
         "model_name": os.getenv("HOPSWORKS_MODEL_NAME", "karachi_aqi_forecaster"),
-        "train_test_split_ratio": float(os.getenv("TRAIN_SPLIT_RATIO", "0.8")),
-        "random_state": int(os.getenv("RANDOM_STATE", "42")),
-        "upload_to_registry": os.getenv("UPLOAD_TO_HOPSWORKS", "true").lower()
-        == "true",
+        "train_test_split_ratio": _as_float_env(os.getenv("TRAIN_SPLIT_RATIO"), 0.8),
+        "random_state": _as_int_env(os.getenv("RANDOM_STATE"), 42),
+        "upload_to_registry": os.getenv("UPLOAD_TO_HOPSWORKS", "true").lower() == "true",
     }
 
     if not config["hopsworks_api_key"]:
@@ -133,9 +171,7 @@ def prepare_training_data(
 
     data = df.copy()
     data["timestamp"] = pd.to_datetime(data["timestamp"], errors="coerce")
-    data = data.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(
-        drop=True
-    )
+    data = data.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
 
     drop_cols = ["id", "timestamp", *target_cols]
     feature_cols = [col for col in data.columns if col not in drop_cols]
@@ -161,6 +197,23 @@ def prepare_training_data(
     y_test = y.iloc[split_index:]
 
     return X_train, X_test, y_train, y_test
+
+
+def split_train_validation(
+    X_data: pd.DataFrame,
+    y_data: pd.DataFrame,
+    validation_ratio: float = 0.15,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Create chronological train/validation split from training data."""
+    split_idx = int(len(X_data) * (1 - validation_ratio))
+    if split_idx <= 0 or split_idx >= len(X_data):
+        raise ValueError("Invalid train/validation split while tuning models.")
+
+    X_fit = X_data.iloc[:split_idx]
+    X_val = X_data.iloc[split_idx:]
+    y_fit = y_data.iloc[:split_idx]
+    y_val = y_data.iloc[split_idx:]
+    return X_fit, X_val, y_fit, y_val
 
 
 def evaluate_predictions(
@@ -196,40 +249,172 @@ def evaluate_predictions(
     return metrics
 
 
-def train_baseline_models(
+def _build_ridge(alpha: float) -> Pipeline:
+    return Pipeline(
+        steps=[
+            ("scaler", StandardScaler()),
+            ("model", Ridge(alpha=alpha)),
+        ]
+    )
+
+
+def _build_lasso(alpha: float) -> Pipeline:
+    return Pipeline(
+        steps=[
+            ("scaler", StandardScaler()),
+            ("model", Lasso(alpha=alpha, max_iter=10000)),
+        ]
+    )
+
+
+def _build_elasticnet(alpha: float, l1_ratio: float) -> Pipeline:
+    return Pipeline(
+        steps=[
+            ("scaler", StandardScaler()),
+            (
+                "model",
+                ElasticNet(alpha=alpha, l1_ratio=l1_ratio, max_iter=10000),
+            ),
+        ]
+    )
+
+
+def _build_random_forest(config: dict[str, Any], random_state: int) -> RandomForestRegressor:
+    return RandomForestRegressor(
+        n_estimators=config["n_estimators"],
+        max_depth=config["max_depth"],
+        min_samples_split=config["min_samples_split"],
+        random_state=random_state,
+        n_jobs=-1,
+    )
+
+
+def _build_extra_trees(config: dict[str, Any], random_state: int) -> ExtraTreesRegressor:
+    return ExtraTreesRegressor(
+        n_estimators=config["n_estimators"],
+        max_depth=config["max_depth"],
+        min_samples_split=config["min_samples_split"],
+        random_state=random_state,
+        n_jobs=-1,
+    )
+
+
+def _fit_predict_single_horizon(
+    model: Any,
+    X_fit: pd.DataFrame,
+    y_fit: pd.Series,
+    X_eval: pd.DataFrame,
+) -> np.ndarray:
+    model.fit(X_fit, y_fit)
+    pred = model.predict(X_eval)
+    return np.asarray(pred, dtype=float)
+
+
+def _rmse(y_true: pd.Series, y_pred: np.ndarray) -> float:
+    return float(np.sqrt(mean_squared_error(y_true, y_pred)))
+
+
+def tune_and_train_horizon_model(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_test: pd.DataFrame,
+    random_state: int,
+) -> dict[str, Any]:
+    """Tune model family per horizon and retrain on full train set."""
+    X_fit, X_val, y_fit, y_val = split_train_validation(X_train, y_train.to_frame())
+    y_fit_series = y_fit.iloc[:, 0]
+    y_val_series = y_val.iloc[:, 0]
+
+    candidates: list[tuple[str, Any]] = []
+    candidates.extend([(f"ridge_alpha={alpha}", _build_ridge(alpha)) for alpha in RIDGE_ALPHAS])
+    candidates.extend([(f"lasso_alpha={alpha}", _build_lasso(alpha)) for alpha in LASSO_ALPHAS])
+    candidates.extend(
+        [
+            (
+                f"elasticnet_alpha={cfg['alpha']}_l1={cfg['l1_ratio']}",
+                _build_elasticnet(cfg["alpha"], cfg["l1_ratio"]),
+            )
+            for cfg in ELASTICNET_CONFIGS
+        ]
+    )
+    candidates.extend(
+        [
+            (
+                f"rf_n={cfg['n_estimators']}_d={cfg['max_depth']}_s={cfg['min_samples_split']}",
+                _build_random_forest(cfg, random_state),
+            )
+            for cfg in RANDOM_FOREST_CONFIGS
+        ]
+    )
+    candidates.extend(
+        [
+            (
+                f"et_n={cfg['n_estimators']}_d={cfg['max_depth']}_s={cfg['min_samples_split']}",
+                _build_extra_trees(cfg, random_state),
+            )
+            for cfg in EXTRA_TREES_CONFIGS
+        ]
+    )
+
+    best_label = ""
+    best_model: Any | None = None
+    best_val_rmse = float("inf")
+
+    for label, model in candidates:
+        val_pred = _fit_predict_single_horizon(model, X_fit, y_fit_series, X_val)
+        val_rmse = _rmse(y_val_series, val_pred)
+        if val_rmse < best_val_rmse:
+            best_label = label
+            best_model = model
+            best_val_rmse = val_rmse
+
+    if best_model is None:
+        raise RuntimeError("No horizon model selected during tuning.")
+
+    best_model.fit(X_train, y_train)
+    test_pred = np.asarray(best_model.predict(X_test), dtype=float)
+
+    return {
+        "model": best_model,
+        "validation": {"best_config": best_label, "rmse": best_val_rmse},
+        "test_predictions": test_pred,
+    }
+
+
+def train_horizon_models(
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
     y_train: pd.DataFrame,
     y_test: pd.DataFrame,
     random_state: int,
-) -> dict[str, dict[str, Any]]:
-    """Train baseline models and return models with metrics."""
-    models: dict[str, Any] = {
-        "ridge": Pipeline(
-            steps=[
-                ("scaler", StandardScaler()),
-                ("model", MultiOutputRegressor(Ridge(alpha=1.0))),
-            ]
-        ),
-        "random_forest": MultiOutputRegressor(
-            RandomForestRegressor(
-                n_estimators=300,
-                max_depth=20,
-                min_samples_split=5,
-                random_state=random_state,
-                n_jobs=-1,
-            )
-        ),
+) -> dict[str, Any]:
+    """Train and tune horizon-specific models, then aggregate metrics."""
+    horizon_models: dict[str, Any] = {}
+    stacked_predictions: list[np.ndarray] = []
+
+    for target_col in TARGET_COLUMNS:
+        y_target = cast(pd.Series, y_train[target_col])
+        trained = tune_and_train_horizon_model(
+            X_train=X_train,
+            y_train=y_target,
+            X_test=X_test,
+            random_state=random_state,
+        )
+        horizon_models[target_col] = {
+            "model": trained["model"],
+            "validation": trained["validation"],
+        }
+        stacked_predictions.append(trained["test_predictions"])
+
+    y_pred_matrix = np.column_stack(stacked_predictions)
+    metrics = evaluate_predictions(y_test, y_pred_matrix, TARGET_COLUMNS)
+
+    return {
+        "model": horizon_models,
+        "metrics": metrics,
+        "framework": "scikit-learn",
+        "model_type": "horizon_specific",
     }
-
-    results: dict[str, dict[str, Any]] = {}
-    for model_name, model in models.items():
-        model.fit(X_train, y_train)
-        predictions = model.predict(X_test)
-        metrics = evaluate_predictions(y_test, predictions, TARGET_COLUMNS)
-        results[model_name] = {"model": model, "metrics": metrics}
-
-    return results
 
 
 def maybe_train_deep_learning_model(
@@ -272,7 +457,12 @@ def maybe_train_deep_learning_model(
 
     predictions = model.predict(X_test.values, verbose=0)
     metrics = evaluate_predictions(y_test, predictions, TARGET_COLUMNS)
-    return {"model": model, "metrics": metrics, "framework": "tensorflow"}
+    return {
+        "model": model,
+        "metrics": metrics,
+        "framework": "tensorflow",
+        "model_type": "multi_output",
+    }
 
 
 def select_best_model(results: dict[str, dict[str, Any]]) -> tuple[str, dict[str, Any]]:
@@ -294,19 +484,35 @@ def save_local_artifacts(
     model_dir = ARTIFACTS_ROOT / f"{model_name}_{run_id}"
     model_dir.mkdir(parents=True, exist_ok=True)
 
+    model_type = model_bundle.get("model_type", "multi_output")
     if model_bundle.get("framework") == "tensorflow":
         model_bundle["model"].save(model_dir / "tf_model")
+    elif model_type == "horizon_specific":
+        horizon_models = model_bundle["model"]
+        for target, horizon_bundle in horizon_models.items():
+            horizon_file = model_dir / f"{target}.joblib"
+            joblib.dump(horizon_bundle["model"], horizon_file)
     else:
         joblib.dump(model_bundle["model"], model_dir / "model.joblib")
 
     metadata = {
         "model_name": model_name,
         "framework": model_bundle.get("framework", "scikit-learn"),
+        "model_type": model_type,
         "feature_columns": feature_columns,
         "target_columns": TARGET_COLUMNS,
         "metrics": model_bundle["metrics"],
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
     }
+
+    if model_type == "horizon_specific":
+        metadata["horizon_models"] = {
+            target: {
+                "artifact": f"{target}.joblib",
+                "validation": bundle.get("validation", {}),
+            }
+            for target, bundle in model_bundle["model"].items()
+        }
 
     with (model_dir / "metadata.json").open("w", encoding="utf-8") as file:
         json.dump(metadata, file, indent=2)
@@ -370,13 +576,15 @@ def main() -> None:
         split_ratio=config["train_test_split_ratio"],
     )
 
-    baseline_results = train_baseline_models(
-        X_train=X_train,
-        X_test=X_test,
-        y_train=y_train,
-        y_test=y_test,
-        random_state=config["random_state"],
-    )
+    results: dict[str, dict[str, Any]] = {
+        "horizon_specific_ensemble": train_horizon_models(
+            X_train=X_train,
+            X_test=X_test,
+            y_train=y_train,
+            y_test=y_test,
+            random_state=config["random_state"],
+        )
+    }
 
     dl_result = maybe_train_deep_learning_model(
         X_train=X_train,
@@ -386,17 +594,26 @@ def main() -> None:
         random_state=config["random_state"],
     )
     if dl_result is not None:
-        baseline_results["tensorflow_mlp"] = dl_result
+        results["tensorflow_mlp"] = dl_result
 
-    best_model_name, best_bundle = select_best_model(baseline_results)
+    best_model_name, best_bundle = select_best_model(results)
 
     print("Model evaluation summary:")
-    for name, bundle in baseline_results.items():
+    for name, bundle in results.items():
         overall = bundle["metrics"]["overall"]
         print(
             f"- {name}: RMSE={overall['rmse']:.4f}, "
             f"MAE={overall['mae']:.4f}, R2={overall['r2']:.4f}"
         )
+
+        if bundle.get("model_type") == "horizon_specific":
+            for target, target_bundle in bundle["model"].items():
+                val = target_bundle.get("validation", {})
+                if val:
+                    print(
+                        f"  * {target}: val_rmse={val['rmse']:.4f} "
+                        f"({val['best_config']})"
+                    )
 
     print(f"Selected best model: {best_model_name}")
     model_dir = save_local_artifacts(best_model_name, best_bundle, list(X_train.columns))

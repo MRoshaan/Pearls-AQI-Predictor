@@ -31,6 +31,8 @@ class RuntimeState:
     model: Any | None = None
     feature_columns: list[str] | None = None
     model_source: str | None = None
+    model_type: str | None = None
+    target_columns: list[str] | None = None
     feature_df: pd.DataFrame | None = None
     feature_source: str | None = None
     feature_fetched_at: float | None = None
@@ -132,7 +134,7 @@ def connect_hopsworks(config: dict[str, Any]) -> Any:
 def _download_model_from_registry(
     project: Any,
     config: dict[str, Any],
-) -> tuple[Any, list[str], str]:
+) -> tuple[Any, list[str], str, str, list[str]]:
     """Try downloading latest model artifact from Hopsworks Model Registry."""
     model_registry = project.get_model_registry()
     model_name = config["model_name"]
@@ -166,19 +168,39 @@ def _download_model_from_registry(
     if metadata_file.exists():
         metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
 
-    model = joblib.load(model_file)
     feature_columns = metadata.get("feature_columns")
     if not feature_columns:
         raise RuntimeError("metadata.json missing feature_columns in registry artifact.")
+
+    model_type = metadata.get("model_type", "multi_output")
+    target_columns = metadata.get(
+        "target_columns",
+        [
+            "target_pm2_5_t_plus_24h",
+            "target_pm2_5_t_plus_48h",
+            "target_pm2_5_t_plus_72h",
+        ],
+    )
+
+    if model_type == "horizon_specific":
+        horizon_models: dict[str, Any] = {}
+        for target in target_columns:
+            target_file = model_dir / f"{target}.joblib"
+            if not target_file.exists():
+                raise RuntimeError(f"Missing horizon model artifact in registry: {target_file.name}")
+            horizon_models[target] = joblib.load(target_file)
+        model: Any = horizon_models
+    else:
+        model = joblib.load(model_file)
 
     source = f"hopsworks_registry:{model_name}"
     if getattr(model_obj, "version", None) is not None:
         source += f":v{model_obj.version}"
 
-    return model, feature_columns, source
+    return model, feature_columns, source, model_type, target_columns
 
 
-def _load_latest_local_model() -> tuple[Any, list[str], str]:
+def _load_latest_local_model() -> tuple[Any, list[str], str, str, list[str]]:
     """Fallback: load latest locally saved model artifact."""
     if not LOCAL_ARTIFACTS_DIR.exists():
         raise RuntimeError("No local artifacts directory found.")
@@ -199,10 +221,31 @@ def _load_latest_local_model() -> tuple[Any, list[str], str]:
     if not isinstance(feature_columns_raw, list):
         raise RuntimeError("metadata.json missing feature_columns in local artifact.")
 
-    return joblib.load(model_file), feature_columns_raw, f"local_artifact:{latest_dir.name}"
+    model_type = metadata.get("model_type", "multi_output")
+    target_columns = metadata.get(
+        "target_columns",
+        [
+            "target_pm2_5_t_plus_24h",
+            "target_pm2_5_t_plus_48h",
+            "target_pm2_5_t_plus_72h",
+        ],
+    )
+
+    if model_type == "horizon_specific":
+        horizon_models: dict[str, Any] = {}
+        for target in target_columns:
+            target_file = latest_dir / f"{target}.joblib"
+            if not target_file.exists():
+                raise RuntimeError(f"Missing horizon model artifact in local artifact: {target_file.name}")
+            horizon_models[target] = joblib.load(target_file)
+        model: Any = horizon_models
+    else:
+        model = joblib.load(model_file)
+
+    return model, feature_columns_raw, f"local_artifact:{latest_dir.name}", model_type, target_columns
 
 
-def load_serving_model() -> tuple[Any, list[str], str]:
+def load_serving_model() -> tuple[Any, list[str], str, str, list[str]]:
     """Load model and feature schema from registry, fallback to local artifact."""
     config = load_config()
 
@@ -285,10 +328,37 @@ def get_cached_feature_data(config: dict[str, Any]) -> tuple[pd.DataFrame, str]:
 
 def get_or_load_model() -> tuple[Any, list[str], str]:
     """Return cached model, loading once per process."""
-    if state.model is None or state.feature_columns is None or state.model_source is None:
-        state.model, state.feature_columns, state.model_source = load_serving_model()
+    if (
+        state.model is None
+        or state.feature_columns is None
+        or state.model_source is None
+        or state.model_type is None
+        or state.target_columns is None
+    ):
+        (
+            state.model,
+            state.feature_columns,
+            state.model_source,
+            state.model_type,
+            state.target_columns,
+        ) = load_serving_model()
 
     return state.model, state.feature_columns, state.model_source
+
+
+def get_or_load_model_details() -> tuple[Any, list[str], str, str, list[str]]:
+    """Return cached model details including model type and targets."""
+    get_or_load_model()
+    if state.model_type is None or state.target_columns is None:
+        raise RuntimeError("Serving model metadata not initialized.")
+
+    return (
+        state.model,
+        state.feature_columns,
+        state.model_source,
+        state.model_type,
+        state.target_columns,
+    )
 
 
 def _latest_row_and_matrix(
@@ -315,21 +385,36 @@ def _latest_row_and_matrix(
 def make_prediction() -> PredictionResponse:
     """Compute latest +24h/+48h/+72h PM2.5 forecast."""
     config = load_config()
-    model, feature_columns, model_source = get_or_load_model()
+    model, feature_columns, model_source, model_type, target_columns = get_or_load_model_details()
 
     feature_df, feature_source = get_cached_feature_data(config)
     latest_row, matrix = _latest_row_and_matrix(feature_df, feature_columns)
 
     X_latest = matrix.tail(1)
-    y_pred = model.predict(X_latest)
-    if len(y_pred.shape) != 2 or y_pred.shape[1] < 3:
-        raise RuntimeError("Model output shape is invalid for 3-horizon prediction.")
+    if model_type == "horizon_specific":
+        pred_map: dict[str, float] = {}
+        for target_col in target_columns:
+            if target_col not in model:
+                raise RuntimeError(f"Missing horizon model for target: {target_col}")
+            pred_map[target_col] = float(model[target_col].predict(X_latest)[0])
 
-    forecast = {
-        "+24h": float(y_pred[0][0]),
-        "+48h": float(y_pred[0][1]),
-        "+72h": float(y_pred[0][2]),
-    }
+        forecast = {
+            "+24h": pred_map.get("target_pm2_5_t_plus_24h", np.nan),
+            "+48h": pred_map.get("target_pm2_5_t_plus_48h", np.nan),
+            "+72h": pred_map.get("target_pm2_5_t_plus_72h", np.nan),
+        }
+        if any(np.isnan(value) for value in forecast.values()):
+            raise RuntimeError("Horizon model predictions missing one or more forecast horizons.")
+    else:
+        y_pred = model.predict(X_latest)
+        if len(y_pred.shape) != 2 or y_pred.shape[1] < 3:
+            raise RuntimeError("Model output shape is invalid for 3-horizon prediction.")
+
+        forecast = {
+            "+24h": float(y_pred[0][0]),
+            "+48h": float(y_pred[0][1]),
+            "+72h": float(y_pred[0][2]),
+        }
     hazardous = any(value >= config["hazardous_pm25_threshold"] for value in forecast.values())
 
     return PredictionResponse(
@@ -351,7 +436,7 @@ def make_explanation(max_features: int = 10) -> ExplainResponse:
         raise RuntimeError("LIME is not installed. Add lime to requirements.") from exc
 
     config = load_config()
-    model, feature_columns, model_source = get_or_load_model()
+    model, feature_columns, model_source, model_type, _ = get_or_load_model_details()
 
     feature_df, feature_source = get_cached_feature_data(config)
     latest_row, matrix = _latest_row_and_matrix(feature_df, feature_columns)
@@ -359,6 +444,12 @@ def make_explanation(max_features: int = 10) -> ExplainResponse:
     sample_size = min(1000, len(matrix))
     background = matrix.tail(sample_size)
     X_latest = matrix.tail(1)
+
+    explanation_model = model
+    if model_type == "horizon_specific":
+        explanation_model = model.get("target_pm2_5_t_plus_24h")
+        if explanation_model is None:
+            raise RuntimeError("Missing +24h horizon model for explainability.")
 
     explainer = lime_tabular.LimeTabularExplainer(
         training_data=background.to_numpy(dtype=float),
@@ -369,10 +460,13 @@ def make_explanation(max_features: int = 10) -> ExplainResponse:
 
     def predict_24h(values: np.ndarray) -> np.ndarray:
         values_df = pd.DataFrame(values, columns=feature_columns)
-        preds = model.predict(values_df)
-        if len(preds.shape) != 2 or preds.shape[1] < 1:
-            raise RuntimeError("Model output shape is invalid for explanation.")
-        return preds[:, 0]
+        preds = explanation_model.predict(values_df)
+        preds_arr = np.asarray(preds)
+        if preds_arr.ndim == 1:
+            return preds_arr
+        if preds_arr.ndim == 2 and preds_arr.shape[1] >= 1:
+            return preds_arr[:, 0]
+        raise RuntimeError("Model output shape is invalid for explanation.")
 
     explanation = explainer.explain_instance(
         data_row=X_latest.iloc[0].to_numpy(dtype=float),
