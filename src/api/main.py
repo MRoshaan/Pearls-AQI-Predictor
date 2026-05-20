@@ -289,7 +289,7 @@ def load_local_feature_data() -> pd.DataFrame:
         raise RuntimeError("Local features file missing timestamp column.")
 
     df = df.copy()
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", format="mixed")
     df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     if df.empty:
         raise RuntimeError("Local features file has no valid timestamp rows.")
