@@ -1,0 +1,172 @@
+{
+  "model_name": "horizon_specific_ensemble",
+  "framework": "scikit-learn",
+  "model_type": "horizon_specific",
+  "feature_columns": [
+    "pm10",
+    "pm2_5",
+    "carbon_monoxide",
+    "nitrogen_dioxide",
+    "sulphur_dioxide",
+    "ozone",
+    "temperature_c",
+    "humidity_pct",
+    "wind_speed",
+    "hour",
+    "day",
+    "month",
+    "day_of_week",
+    "is_weekend",
+    "hour_sin",
+    "hour_cos",
+    "month_sin",
+    "month_cos",
+    "aqi_proxy",
+    "aqi_change_rate",
+    "pm2_5_to_pm10_ratio",
+    "pm2_5_lag_1h",
+    "pm10_lag_1h",
+    "ozone_lag_1h",
+    "nitrogen_dioxide_lag_1h",
+    "pm2_5_lag_3h",
+    "pm10_lag_3h",
+    "ozone_lag_3h",
+    "nitrogen_dioxide_lag_3h",
+    "pm2_5_lag_6h",
+    "pm10_lag_6h",
+    "ozone_lag_6h",
+    "nitrogen_dioxide_lag_6h",
+    "pm2_5_lag_12h",
+    "pm10_lag_12h",
+    "ozone_lag_12h",
+    "nitrogen_dioxide_lag_12h",
+    "pm2_5_lag_24h",
+    "pm10_lag_24h",
+    "ozone_lag_24h",
+    "nitrogen_dioxide_lag_24h",
+    "pm2_5_lag_48h",
+    "pm10_lag_48h",
+    "ozone_lag_48h",
+    "nitrogen_dioxide_lag_48h",
+    "pm2_5_lag_72h",
+    "pm10_lag_72h",
+    "ozone_lag_72h",
+    "nitrogen_dioxide_lag_72h",
+    "pm2_5_roll_mean_6h",
+    "pm2_5_roll_std_6h",
+    "pm2_5_roll_min_6h",
+    "pm2_5_roll_max_6h",
+    "pm10_roll_mean_6h",
+    "pm10_roll_std_6h",
+    "pm2_5_roll_mean_12h",
+    "pm2_5_roll_std_12h",
+    "pm2_5_roll_min_12h",
+    "pm2_5_roll_max_12h",
+    "pm10_roll_mean_12h",
+    "pm10_roll_std_12h",
+    "pm2_5_roll_mean_24h",
+    "pm2_5_roll_std_24h",
+    "pm2_5_roll_min_24h",
+    "pm2_5_roll_max_24h",
+    "pm10_roll_mean_24h",
+    "pm10_roll_std_24h",
+    "pm2_5_roll_mean_48h",
+    "pm2_5_roll_std_48h",
+    "pm2_5_roll_min_48h",
+    "pm2_5_roll_max_48h",
+    "pm10_roll_mean_48h",
+    "pm10_roll_std_48h",
+    "pm2_5_roll_mean_72h",
+    "pm2_5_roll_std_72h",
+    "pm2_5_roll_min_72h",
+    "pm2_5_roll_max_72h",
+    "pm10_roll_mean_72h",
+    "pm10_roll_std_72h",
+    "pm2_5_ewm_mean_12h",
+    "pm2_5_ewm_mean_24h",
+    "pm2_5_diff_1h",
+    "pm2_5_diff_3h",
+    "pm2_5_diff_24h",
+    "day_of_year",
+    "day_of_year_sin",
+    "day_of_year_cos",
+    "temp_humidity_interaction",
+    "temperature_c_lag_1h",
+    "humidity_pct_lag_1h",
+    "wind_speed_lag_1h",
+    "temperature_c_lag_3h",
+    "humidity_pct_lag_3h",
+    "wind_speed_lag_3h",
+    "temperature_c_lag_6h",
+    "humidity_pct_lag_6h",
+    "wind_speed_lag_6h",
+    "temperature_c_lag_12h",
+    "humidity_pct_lag_12h",
+    "wind_speed_lag_12h",
+    "temperature_c_lag_24h",
+    "humidity_pct_lag_24h",
+    "wind_speed_lag_24h",
+    "weather_forecast_temperature_c_t_plus_24h",
+    "weather_forecast_humidity_pct_t_plus_24h",
+    "weather_forecast_wind_speed_t_plus_24h",
+    "weather_forecast_temperature_c_t_plus_48h",
+    "weather_forecast_humidity_pct_t_plus_48h",
+    "weather_forecast_wind_speed_t_plus_48h",
+    "weather_forecast_temperature_c_t_plus_72h",
+    "weather_forecast_humidity_pct_t_plus_72h",
+    "weather_forecast_wind_speed_t_plus_72h"
+  ],
+  "target_columns": [
+    "target_pm2_5_t_plus_24h",
+    "target_pm2_5_t_plus_48h",
+    "target_pm2_5_t_plus_72h"
+  ],
+  "metrics": {
+    "per_target": {
+      "target_pm2_5_t_plus_24h": {
+        "rmse": 6.253855169096343,
+        "mae": 4.462469248246672,
+        "r2": 0.6142205359323476
+      },
+      "target_pm2_5_t_plus_48h": {
+        "rmse": 8.929271349035998,
+        "mae": 6.605384893448652,
+        "r2": 0.21442222975725844
+      },
+      "target_pm2_5_t_plus_72h": {
+        "rmse": 9.843893965225547,
+        "mae": 7.300967395081958,
+        "r2": 0.045526721778475276
+      }
+    },
+    "overall": {
+      "rmse": 8.342340161119296,
+      "mae": 6.1229405122590945,
+      "r2": 0.2913898291560271
+    }
+  },
+  "created_at_utc": "2026-05-25T20:21:01.319763+00:00",
+  "horizon_models": {
+    "target_pm2_5_t_plus_24h": {
+      "artifact": "target_pm2_5_t_plus_24h.joblib",
+      "validation": {
+        "best_config": "voting_hgbr_iter=180_lr=0.05_d=6_leaf=20",
+        "rmse": 8.783810721934705
+      }
+    },
+    "target_pm2_5_t_plus_48h": {
+      "artifact": "target_pm2_5_t_plus_48h.joblib",
+      "validation": {
+        "best_config": "voting_hgbr_iter=180_lr=0.05_d=6_leaf=20",
+        "rmse": 12.825225303514012
+      }
+    },
+    "target_pm2_5_t_plus_72h": {
+      "artifact": "target_pm2_5_t_plus_72h.joblib",
+      "validation": {
+        "best_config": "voting_hgbr_iter=180_lr=0.05_d=6_leaf=20",
+        "rmse": 14.344162175409462
+      }
+    }
+  }
+}

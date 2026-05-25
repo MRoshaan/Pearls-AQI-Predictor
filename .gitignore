@@ -21,8 +21,14 @@ dist/
 
 # Data artifacts
 data/raw/*.csv
-data/processed/
-artifacts/models/
+
+# Ignore all processed data EXCEPT the exact features CSV
+data/processed/*
+!data/processed/karachi_features.csv
+
+# Ignore all models EXCEPT your latest ensemble folder
+artifacts/models/*
+!artifacts/models/horizon_specific_ensemble_20260525_202100/
 
 # Tooling caches
 .pytest_cache/
