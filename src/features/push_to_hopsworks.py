@@ -9,7 +9,9 @@ import pandas as pd
 from dotenv import load_dotenv
 
 
-FEATURES_PATH = Path("data/processed/karachi_features.csv")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_PATH = PROJECT_ROOT / ".env"
+FEATURES_PATH = PROJECT_ROOT / "data/processed/karachi_features.csv"
 
 
 def ensure_windows_hopsworks_tmp(host: str) -> None:
@@ -43,14 +45,14 @@ def load_features(path: Path) -> pd.DataFrame:
 
 def push_features_to_store(df: pd.DataFrame) -> None:
     """Upload features dataframe to Hopsworks feature group."""
-    load_dotenv()
+    load_dotenv(dotenv_path=ENV_PATH)
 
     api_key = os.getenv("HOPSWORKS_API_KEY")
     project_name = os.getenv("HOPSWORKS_PROJECT", "pearls_aqi_predictor")
     hopsworks_host = os.getenv("HOPSWORKS_HOST", "eu-west.cloud.hopsworks.ai")
     hopsworks_port = int(os.getenv("HOPSWORKS_PORT", "443"))
     feature_group_name = os.getenv("HOPSWORKS_FEATURE_GROUP", "karachi_aqi_features")
-    feature_group_version = int(os.getenv("HOPSWORKS_FEATURE_GROUP_VERSION", "1"))
+    feature_group_version = int(os.getenv("HOPSWORKS_FEATURE_GROUP_VERSION", "3"))
 
     if not api_key:
         raise ValueError("Missing HOPSWORKS_API_KEY in .env for feature store upload.")

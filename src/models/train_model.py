@@ -18,7 +18,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from sklearn.ensemble import ExtraTreesRegressor, RandomForestRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor, VotingRegressor
 from sklearn.linear_model import ElasticNet, Lasso, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.pipeline import Pipeline
@@ -26,6 +26,7 @@ from sklearn.preprocessing import StandardScaler
 
 
 ARTIFACTS_ROOT = Path("artifacts/models")
+LOCAL_FEATURES_PATH = Path("data/processed/karachi_features.csv")
 TARGET_COLUMNS = [
     "target_pm2_5_t_plus_24h",
     "target_pm2_5_t_plus_48h",
@@ -38,14 +39,10 @@ ELASTICNET_CONFIGS = [
     {"alpha": 0.003, "l1_ratio": 0.5},
     {"alpha": 0.01, "l1_ratio": 0.7},
 ]
-RANDOM_FOREST_CONFIGS = [
-    {"n_estimators": 300, "max_depth": 20, "min_samples_split": 5},
-    {"n_estimators": 500, "max_depth": None, "min_samples_split": 2},
-    {"n_estimators": 400, "max_depth": 30, "min_samples_split": 3},
-]
-EXTRA_TREES_CONFIGS = [
-    {"n_estimators": 300, "max_depth": None, "min_samples_split": 2},
-    {"n_estimators": 500, "max_depth": 30, "min_samples_split": 2},
+VOTING_HGBR_CONFIGS = [
+    {"max_iter": 180, "learning_rate": 0.05, "max_depth": 6, "min_samples_leaf": 20},
+    {"max_iter": 260, "learning_rate": 0.05, "max_depth": 8, "min_samples_leaf": 20},
+    {"max_iter": 220, "learning_rate": 0.08, "max_depth": 6, "min_samples_leaf": 30},
 ]
 
 
@@ -88,19 +85,22 @@ def load_environment() -> dict[str, Any]:
     load_dotenv()
 
     config = {
+        "use_hopsworks": os.getenv("USE_HOPSWORKS", "false").lower() == "true",
         "hopsworks_api_key": os.getenv("HOPSWORKS_API_KEY"),
         "hopsworks_project": os.getenv("HOPSWORKS_PROJECT", "pearls_aqi_predictor"),
         "hopsworks_host": os.getenv("HOPSWORKS_HOST", "eu-west.cloud.hopsworks.ai"),
         "hopsworks_port": _as_int_env(os.getenv("HOPSWORKS_PORT"), 443),
         "feature_group": os.getenv("HOPSWORKS_FEATURE_GROUP", "karachi_aqi_features"),
-        "feature_group_version": _as_int_env(os.getenv("HOPSWORKS_FEATURE_GROUP_VERSION"), 1),
+        "feature_group_version": _as_int_env(os.getenv("HOPSWORKS_FEATURE_GROUP_VERSION"), 3),
         "model_name": os.getenv("HOPSWORKS_MODEL_NAME", "karachi_aqi_forecaster"),
         "train_test_split_ratio": _as_float_env(os.getenv("TRAIN_SPLIT_RATIO"), 0.8),
         "random_state": _as_int_env(os.getenv("RANDOM_STATE"), 42),
-        "upload_to_registry": os.getenv("UPLOAD_TO_HOPSWORKS", "true").lower() == "true",
+        "upload_to_registry": os.getenv("UPLOAD_TO_HOPSWORKS", "false").lower() == "true",
+        "max_feature_age_hours": _as_float_env(os.getenv("MAX_FEATURE_AGE_HOURS"), 48.0),
+        "enforce_fresh_features": os.getenv("ENFORCE_FRESH_FEATURES", "false").lower() == "true",
     }
 
-    if not config["hopsworks_api_key"]:
+    if config["use_hopsworks"] and not config["hopsworks_api_key"]:
         raise ValueError("Missing HOPSWORKS_API_KEY in .env.")
 
     return config
@@ -153,7 +153,46 @@ def fetch_feature_group_dataframe(
     if df.empty:
         raise ValueError("Feature group returned no rows.")
 
+    if "timestamp" not in df.columns:
+        raise ValueError("Feature group dataframe missing timestamp column.")
+
     return df
+
+
+def fetch_local_features_dataframe(path: Path = LOCAL_FEATURES_PATH) -> pd.DataFrame:
+    """Fetch engineered features from local CSV for offline/local-first training."""
+    if not path.exists():
+        raise FileNotFoundError(f"Local features file not found: {path}")
+
+    df = pd.read_csv(path)
+    if df.empty:
+        raise ValueError("Local features file is empty.")
+
+    if "timestamp" not in df.columns:
+        raise ValueError("Local features dataframe missing timestamp column.")
+
+    return df
+
+
+def validate_feature_freshness(df: pd.DataFrame, config: dict[str, Any]) -> None:
+    """Optionally block training on stale feature data."""
+    ts = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+    latest = ts.max()
+    if pd.isna(latest):
+        raise ValueError("Cannot determine latest timestamp for freshness validation.")
+
+    age_hours = (datetime.now(timezone.utc) - latest.to_pydatetime()).total_seconds() / 3600
+    if config.get("enforce_fresh_features", False) and age_hours > float(config["max_feature_age_hours"]):
+        raise ValueError(
+            "Training blocked due to stale feature data: "
+            f"age={age_hours:.2f}h, limit={float(config['max_feature_age_hours']):.2f}h"
+        )
+
+    print(
+        "Feature freshness check: "
+        f"latest={latest.isoformat()}, age_hours={age_hours:.2f}, "
+        f"enforced={config.get('enforce_fresh_features', False)}"
+    )
 
 
 def prepare_training_data(
@@ -186,6 +225,23 @@ def prepare_training_data(
     valid_rows = ~(X.isna().any(axis=1) | y.isna().any(axis=1))
     X = X.loc[valid_rows].reset_index(drop=True)
     y = y.loc[valid_rows].reset_index(drop=True)
+
+    if "precipitation" in X.columns:
+        precip_std = float(X["precipitation"].std(skipna=True))
+        if np.isnan(precip_std) or precip_std <= 1e-3:
+            drop_cols = [
+                col
+                for col in X.columns
+                if col == "precipitation"
+                or col.startswith("precipitation_lag_")
+                or col.startswith("weather_forecast_precipitation_")
+            ]
+            if drop_cols:
+                print(
+                    "Dropping low-signal precipitation feature family during training: "
+                    f"std={precip_std:.6f}, cols={len(drop_cols)}"
+                )
+                X = X.drop(columns=drop_cols)
 
     split_index = int(len(X) * split_ratio)
     if split_index <= 0 or split_index >= len(X):
@@ -279,23 +335,31 @@ def _build_elasticnet(alpha: float, l1_ratio: float) -> Pipeline:
     )
 
 
-def _build_random_forest(config: dict[str, Any], random_state: int) -> RandomForestRegressor:
-    return RandomForestRegressor(
-        n_estimators=config["n_estimators"],
+def _build_hist_gradient_boosting(config: dict[str, Any], random_state: int) -> HistGradientBoostingRegressor:
+    return HistGradientBoostingRegressor(
+        max_iter=config["max_iter"],
+        learning_rate=config["learning_rate"],
         max_depth=config["max_depth"],
-        min_samples_split=config["min_samples_split"],
+        min_samples_leaf=config["min_samples_leaf"],
         random_state=random_state,
-        n_jobs=-1,
     )
 
 
-def _build_extra_trees(config: dict[str, Any], random_state: int) -> ExtraTreesRegressor:
-    return ExtraTreesRegressor(
-        n_estimators=config["n_estimators"],
-        max_depth=config["max_depth"],
-        min_samples_split=config["min_samples_split"],
+def _build_voting_regressor(config: dict[str, Any], random_state: int) -> VotingRegressor:
+    """Build robust ensemble combining boosted trees and random forest."""
+    hgbr = _build_hist_gradient_boosting(config, random_state)
+    rf = RandomForestRegressor(
+        n_estimators=50,
+        max_depth=20,
+        min_samples_split=2,
         random_state=random_state,
         n_jobs=-1,
+    )
+    return VotingRegressor(
+        estimators=[
+            ("hgbr", hgbr),
+            ("rf", rf),
+        ]
     )
 
 
@@ -321,40 +385,22 @@ def tune_and_train_horizon_model(
     random_state: int,
 ) -> dict[str, Any]:
     """Tune model family per horizon and retrain on full train set."""
+    fast_train = os.getenv("FAST_TRAIN", "false").lower() == "true"
     X_fit, X_val, y_fit, y_val = split_train_validation(X_train, y_train.to_frame())
     y_fit_series = y_fit.iloc[:, 0]
     y_val_series = y_val.iloc[:, 0]
 
-    candidates: list[tuple[str, Any]] = []
-    candidates.extend([(f"ridge_alpha={alpha}", _build_ridge(alpha)) for alpha in RIDGE_ALPHAS])
-    candidates.extend([(f"lasso_alpha={alpha}", _build_lasso(alpha)) for alpha in LASSO_ALPHAS])
-    candidates.extend(
-        [
+    hgbr_candidates = VOTING_HGBR_CONFIGS[:1] if fast_train else VOTING_HGBR_CONFIGS
+    candidates: list[tuple[str, Any]] = [
+        (
             (
-                f"elasticnet_alpha={cfg['alpha']}_l1={cfg['l1_ratio']}",
-                _build_elasticnet(cfg["alpha"], cfg["l1_ratio"]),
-            )
-            for cfg in ELASTICNET_CONFIGS
-        ]
-    )
-    candidates.extend(
-        [
-            (
-                f"rf_n={cfg['n_estimators']}_d={cfg['max_depth']}_s={cfg['min_samples_split']}",
-                _build_random_forest(cfg, random_state),
-            )
-            for cfg in RANDOM_FOREST_CONFIGS
-        ]
-    )
-    candidates.extend(
-        [
-            (
-                f"et_n={cfg['n_estimators']}_d={cfg['max_depth']}_s={cfg['min_samples_split']}",
-                _build_extra_trees(cfg, random_state),
-            )
-            for cfg in EXTRA_TREES_CONFIGS
-        ]
-    )
+                f"voting_hgbr_iter={cfg['max_iter']}_lr={cfg['learning_rate']}_"
+                f"d={cfg['max_depth']}_leaf={cfg['min_samples_leaf']}"
+            ),
+            _build_voting_regressor(cfg, random_state),
+        )
+        for cfg in hgbr_candidates
+    ]
 
     best_label = ""
     best_model: Any | None = None
@@ -557,18 +603,29 @@ def upload_to_hopsworks_registry(
 def main() -> None:
     """Run complete model training and registry workflow."""
     config = load_environment()
-    project = connect_hopsworks(
-        project_name=config["hopsworks_project"],
-        api_key=config["hopsworks_api_key"],
-        host=config["hopsworks_host"],
-        port=config["hopsworks_port"],
-    )
-
-    features_df = fetch_feature_group_dataframe(
-        project=project,
-        feature_group_name=config["feature_group"],
-        feature_group_version=config["feature_group_version"],
-    )
+    project = None
+    if config["use_hopsworks"]:
+        try:
+            project = connect_hopsworks(
+                project_name=config["hopsworks_project"],
+                api_key=config["hopsworks_api_key"],
+                host=config["hopsworks_host"],
+                port=config["hopsworks_port"],
+            )
+            features_df = fetch_feature_group_dataframe(
+                project=project,
+                feature_group_name=config["feature_group"],
+                feature_group_version=config["feature_group_version"],
+            )
+            print("Loaded training data from Hopsworks Feature Store.")
+        except Exception as exc:
+            print(f"Hopsworks read failed, falling back to local features: {exc}")
+            features_df = fetch_local_features_dataframe()
+            print(f"Loaded training data from local CSV: {LOCAL_FEATURES_PATH}")
+    else:
+        features_df = fetch_local_features_dataframe()
+        print(f"Loaded training data from local CSV: {LOCAL_FEATURES_PATH}")
+    validate_feature_freshness(features_df, config)
 
     X_train, X_test, y_train, y_test = prepare_training_data(
         df=features_df,
@@ -619,7 +676,7 @@ def main() -> None:
     model_dir = save_local_artifacts(best_model_name, best_bundle, list(X_train.columns))
     print(f"Saved local model artifacts to {model_dir}")
 
-    if config["upload_to_registry"]:
+    if config["upload_to_registry"] and project is not None:
         upload_to_hopsworks_registry(
             project=project,
             model_name=config["model_name"],

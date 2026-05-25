@@ -22,10 +22,16 @@ jobs:
       - name: Run historical ingestion
         run: python src/data/historical_ingestion.py
 
+      - name: Run historical weather ingestion
+        run: python src/data/historical_weather_ingestion.py
+
       - name: Run current AQICN ingestion
         env:
           API_KEY: ${{ secrets.API_KEY }}
         run: python src/data/ingestion.py
+
+      - name: Run weather forecast ingestion
+        run: python src/data/weather_forecast_ingestion.py
 
       - name: Build engineered features
         run: python src/features/build_features.py

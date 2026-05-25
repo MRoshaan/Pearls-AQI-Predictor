@@ -20,6 +20,8 @@ Current phase: **Week 5 - Serving API and Dashboard Interface**.
 
 - Current/raw AQI snapshot: `data/raw/karachi_aqi_raw.csv`
 - Historical hourly AQI data: `data/raw/karachi_historical_aqi.csv`
+- Historical weather covariates: `data/raw/karachi_historical_weather.csv`
+- Hourly weather forecast covariates: `data/raw/karachi_weather_forecast.csv`
 - Engineered feature dataset: `data/processed/karachi_features.csv`
 - EDA figures:
   - `reports/figures/karachi_pm25_pm10_trend.png`
@@ -84,7 +86,19 @@ python src/data/historical_ingestion.py
 python src/data/eda_karachi.py
 ```
 
-### 4) Build Feature Dataset (Week 2)
+### 4) Historical Weather Ingestion (Open-Meteo Forecast)
+
+```bash
+python src/data/historical_weather_ingestion.py
+```
+
+### 5) Weather Forecast Ingestion (Open-Meteo Forecast)
+
+```bash
+python src/data/weather_forecast_ingestion.py
+```
+
+### 6) Build Feature Dataset (Week 2)
 
 ```bash
 python src/features/build_features.py
@@ -92,23 +106,25 @@ python src/features/build_features.py
 
 This step now merges:
 - historical Open-Meteo hourly data
+- historical weather covariates
 - latest AQICN live snapshot (`data/raw/karachi_aqi_raw.csv`)
+- weather forecast covariates for +24h/+48h/+72h weather features
 
 so the most recent timestamp can stay closer to real-time.
 
-### 5) Push Features to Hopsworks
+### 7) Push Features to Hopsworks
 
 ```bash
 python src/features/push_to_hopsworks.py
 ```
 
-### 6) Train Models and Upload Winner to Model Registry (Week 3)
+### 8) Train Models and Upload Winner to Model Registry (Week 3)
 
 ```bash
 python src/models/train_model.py
 ```
 
-### 7) Run FastAPI Serving Layer (Week 5)
+### 9) Run FastAPI Serving Layer (Week 5)
 
 ```bash
 uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
@@ -118,6 +134,7 @@ Available endpoints:
 - `GET /health`
 - `GET /predict/latest`
 - `GET /predict/latest/explain?max_features=10`
+- `GET /debug/runtime`
 
 `/predict/latest` will:
 - load the latest model from Hopsworks Model Registry (fallback to local artifacts)
@@ -125,7 +142,18 @@ Available endpoints:
 - predict PM2.5 concentration (ug/m^3) for +24h, +48h, +72h
 - return a hazardous alert flag when forecast crosses PM2.5 hazardous threshold
 
-### 8) Run Streamlit Dashboard (Week 5)
+Freshness and fallback controls:
+- `HOPSWORKS_FEATURE_GROUP_VERSION` (default: `2`)
+- `ALLOW_LOCAL_FEATURE_FALLBACK` (default: `false`)
+- `ENFORCE_FRESH_FEATURES` (default: `false`)
+- `MAX_FEATURE_AGE_HOURS` (default: `48`)
+
+Local-first mode (recommended when Hopsworks is unstable):
+- `USE_HOPSWORKS=false` makes training/API use local files and artifacts.
+- `UPLOAD_TO_HOPSWORKS=false` skips registry upload during training.
+- Train locally with `python src/models/train_model.py` after building features.
+
+### 10) Run Streamlit Dashboard (Week 5)
 
 ```bash
 streamlit run src/app/dashboard.py
@@ -147,9 +175,11 @@ Dashboard capabilities:
 Serving reliability notes:
 - FastAPI caches fetched feature data in-memory for a short TTL to reduce repeated Feature Store reads.
 - Configure cache window with `FEATURE_CACHE_TTL_SECONDS` (default: `120`).
+- Use `/debug/runtime` to inspect active feature group version, cache age, data source, and freshness settings.
 
 This script:
-- pulls historical features/targets from Hopsworks
+- pulls historical features/targets from local CSV by default
+- optionally uses Hopsworks when `USE_HOPSWORKS=true`
 - trains horizon-specific models with walk-forward validation
 - tunes multiple model families (Ridge, Lasso, ElasticNet, Random Forest, Extra Trees)
 - optionally trains a TensorFlow MLP (`ENABLE_TENSORFLOW=true`)
