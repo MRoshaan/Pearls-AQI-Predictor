@@ -13,7 +13,7 @@ import streamlit as st
 st.set_page_config(page_title="Karachi Daily AQI Forecast", page_icon="AQI", layout="wide")
 
 # Update this line in dashboard.py
-API_BASE_URL = os.getenv("API_BASE_URL", "https://laurel-chlorine-directed.ngrok-free.dev")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://roshaan727-pearls.hf.space")
 
 
 def aqi_category(aqi: int) -> tuple[str, str]:
