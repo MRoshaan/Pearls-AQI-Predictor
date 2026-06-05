@@ -1,5 +1,5 @@
 # Pearls AQI Predictor
-live : https://pearls-aqi-predictor-bq66ofcqy84by6coq6bpap.streamlit.app/
+live : https://pearls-aqi-predictor-bq66ofcqy84by6coq6bpap.streamlit.app/                 
 End-to-end PM2.5 forecasting service with AQI-style risk bands focused on Karachi, Pakistan.
 Current phase: **Week 5 - Serving API and Dashboard Interface**.
 
