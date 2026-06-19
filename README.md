@@ -1,5 +1,4 @@
 # Pearls AQI Predictor
-
 **A serverless 3-day Air Quality Index forecasting platform for Karachi, Pakistan.**
 
 > **Live Demo:** [https://roshaan727-pearls.hf.space](https://roshaan727-pearls.hf.space)
