@@ -14,6 +14,20 @@ ENV_PATH = PROJECT_ROOT / ".env"
 FEATURES_PATH = PROJECT_ROOT / "data/processed/karachi_features.csv"
 
 
+def disable_hudi_hive_sync_if_spark_available() -> None:
+    """Disable Hudi Hive sync when running inside an active Spark session."""
+    try:
+        from pyspark.sql import SparkSession
+    except Exception:
+        return
+
+    spark = SparkSession.getActiveSession()
+    if spark is None:
+        return
+
+    spark.conf.set("hoodie.datasource.hive_sync.enable", "false")
+
+
 def ensure_windows_hopsworks_tmp(host: str) -> None:
     """Create temp directories expected by Hopsworks client on Windows."""
     if os.name != "nt":
@@ -38,13 +52,16 @@ def load_features(path: Path) -> pd.DataFrame:
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", format="mixed")
     df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     if df.empty:
-        raise ValueError("Features dataframe has no valid timestamp values after parsing.")
+        raise ValueError(
+            "Features dataframe has no valid timestamp values after parsing."
+        )
 
     return df
 
 
 def push_features_to_store(df: pd.DataFrame) -> None:
     """Upload features dataframe to Hopsworks feature group."""
+    disable_hudi_hive_sync_if_spark_available()
     load_dotenv(dotenv_path=ENV_PATH)
 
     api_key = os.getenv("HOPSWORKS_API_KEY")
@@ -93,6 +110,23 @@ def push_features_to_store(df: pd.DataFrame) -> None:
         event_time="timestamp",
         online_enabled=False,
     )
+
+    # --- ADDED SAFETY NET FOR MISSING PRECIPITATION COLUMNS ---
+    expected_precip_cols = [
+        "precipitation",
+        "precipitation_lag_1h",
+        "precipitation_lag_3h",
+        "precipitation_lag_6h",
+        "precipitation_lag_12h",
+        "precipitation_lag_24h",
+        "weather_forecast_precipitation_t_plus_24h",
+        "weather_forecast_precipitation_t_plus_48h",
+        "weather_forecast_precipitation_t_plus_72h",
+    ]
+    for col in expected_precip_cols:
+        if col not in df.columns:
+            df[col] = 0.0
+    # ----------------------------------------------------------
 
     feature_group.insert(df, write_options={"wait_for_job": True})
     print(

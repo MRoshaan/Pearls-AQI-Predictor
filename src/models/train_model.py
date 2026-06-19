@@ -345,21 +345,14 @@ def _build_hist_gradient_boosting(config: dict[str, Any], random_state: int) -> 
     )
 
 
-def _build_voting_regressor(config: dict[str, Any], random_state: int) -> VotingRegressor:
-    """Build robust ensemble combining boosted trees and random forest."""
-    hgbr = _build_hist_gradient_boosting(config, random_state)
-    rf = RandomForestRegressor(
-        n_estimators=50,
-        max_depth=20,
-        min_samples_split=2,
+def _build_voting_regressor(config: dict[str, Any], random_state: int) -> RandomForestRegressor:
+    """Build a pure Random Forest Regressor to guarantee feature importance scores."""
+    return RandomForestRegressor(
+        n_estimators=150,
+        max_depth=config.get("max_depth", 10),
+        min_samples_leaf=config.get("min_samples_leaf", 2),
         random_state=random_state,
         n_jobs=-1,
-    )
-    return VotingRegressor(
-        estimators=[
-            ("hgbr", hgbr),
-            ("rf", rf),
-        ]
     )
 
 
@@ -686,4 +679,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    
     main()
+    
