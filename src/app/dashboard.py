@@ -10,10 +10,14 @@ import requests
 import streamlit as st
 
 
-st.set_page_config(page_title="Karachi Daily AQI Forecast", page_icon="AQI", layout="wide")
+st.set_page_config(
+    page_title="Karachi Daily AQI Forecast", page_icon="AQI", layout="wide"
+)
 
 # Update this line in dashboard.py
-API_BASE_URL = os.getenv("API_BASE_URL", "https://roshaan727-pearls.hf.space")
+API_BASE_URL = os.getenv(
+    "API_BASE_URL", "https://pearls-aqi-predictor-bq66ofcqy84by6coq6bpap.streamlit.app"
+)
 
 
 def aqi_category(aqi: int) -> tuple[str, str]:
@@ -78,7 +82,9 @@ def render_forecast_cards(payload: dict[str, Any]) -> None:
         aqi_value = int(payload["daily_avg_aqi_forecast"][day_key])
         band, color = aqi_category(aqi_value)
         with col:
-            st.metric(label=title, value=f"{pm25_value:.1f} ug/m^3", delta=f"AQI {aqi_value}")
+            st.metric(
+                label=title, value=f"{pm25_value:.1f} ug/m^3", delta=f"AQI {aqi_value}"
+            )
             st.markdown(
                 f"<div style='color:{color};font-weight:600;margin-top:-0.4rem'>{band}</div>",
                 unsafe_allow_html=True,

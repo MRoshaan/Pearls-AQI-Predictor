@@ -1,7 +1,7 @@
 # Pearls AQI Predictor
 **A serverless 3-day Air Quality Index forecasting platform for Karachi, Pakistan.**
 
-> **Live Demo:** [https://roshaan727-pearls.hf.space](https://roshaan727-pearls.hf.space)
+> **Live Demo:** [https://pearls-aqi-predictor-bq66ofcqy84by6coq6bpap.streamlit.app](https://pearls-aqi-predictor-bq66ofcqy84by6coq6bpap.streamlit.app)
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111-green)
@@ -52,13 +52,13 @@ The system fetches real-time and historical air quality + weather data, engineer
 | **Dashboard** | Streamlit | Metric cards, trajectory charts, AQI warnings, feature importance |
 | **CI/CD** | GitHub Actions | Automated feature + training pipelines |
 | **Feature Store** | Hopsworks / Local CSV | Dual-mode with local-first fallback |
-| **Deployment** | HuggingFace Spaces | Live demo at [roshaan727-pearls.hf.space](https://roshaan727-pearls.hf.space) |
+| **Deployment** | HuggingFace Spaces | Live demo at [pearls-aqi-predictor-bq66ofcqy84by6coq6bpap.streamlit.app](https://pearls-aqi-predictor-bq66ofcqy84by6coq6bpap.streamlit.app) |
 
 ---
 
 ## Live Demo
 
-**Dashboard:** [https://roshaan727-pearls.hf.space](https://roshaan727-pearls.hf.space)
+**Dashboard:** [https://pearls-aqi-predictor-bq66ofcqy84by6coq6bpap.streamlit.app](https://pearls-aqi-predictor-bq66ofcqy84by6coq6bpap.streamlit.app)
 
 The live demo shows:
 - **Day 1 / Day 2 / Day 3** daily-average PM2.5 forecasts in metric cards

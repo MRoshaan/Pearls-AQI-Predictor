@@ -271,7 +271,7 @@ The legacy `/predict/latest/explain` endpoint still supports LIME explanations f
 
 ### HuggingFace Spaces
 
-- **Dashboard URL**: https://roshaan727-pearls.hf.space
+- **Dashboard URL**: https://pearls-aqi-predictor-bq66ofcqy84by6coq6bpap.streamlit.app
 - **Stack**: Streamlit + FastAPI
 - The API serves predictions from local model artifacts
 - The dashboard consumes the API and renders the full forecast UI
